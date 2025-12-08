@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, WebSocket, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import asyncio
@@ -166,6 +166,90 @@ async def stream_song(song_name: str, user_id: str = None):
         return FileResponse(target_file, media_type="audio/mpeg", filename=os.path.basename(target_file))
     else:
         raise HTTPException(status_code=404, detail="File not found")
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(r"D:\Projects\YoutubeMusic\API\favicon.png")
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    songs_count = len(os.listdir(SONGS_DIR)) if os.path.exists(SONGS_DIR) else 0
+    
+    mappings_count = 0
+    if os.path.exists(MAPPING_FILE):
+        try:
+            with open(MAPPING_FILE, "r") as f:
+                mappings_count = len(json.load(f))
+        except:
+            pass
+            
+    profiles_dir = os.path.join("API", "profiles")
+    profiles_count = len(os.listdir(profiles_dir)) if os.path.exists(profiles_dir) else 0
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>ZIZO Music API</title>
+        <style>
+            body {{ font-family: sans-serif; background-color: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+            h1 {{ color: #DC2626; font-size: 3rem; margin-bottom: 1rem; }}
+            .stats {{ display: flex; gap: 2rem; margin-top: 2rem; }}
+            .stat-box {{ background: #18181b; padding: 1.5rem; border-radius: 10px; text-align: center; min-width: 150px; border: 1px solid #333; }}
+            .stat-value {{ font-size: 2.5rem; font-weight: bold; color: #fff; }}
+            .stat-label {{ color: #888; margin-top: 0.5rem; }}
+            a {{ color: #DC2626; text-decoration: none; margin-top: 2rem; }}
+            a:hover {{ text-decoration: underline; }}
+        </style>
+    </head>
+    <body>
+        <h1>ZIZO Music API</h1>
+        <p>Backend Server Status: <strong>Online</strong></p>
+        
+        <div class="stats">
+            <div class="stat-box">
+                <div class="stat-value">{songs_count}</div>
+                <div class="stat-label">Cached Songs</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{mappings_count}</div>
+                <div class="stat-label">Song Mappings</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{profiles_count}</div>
+                <div class="stat-label">Active Profiles</div>
+            </div>
+        </div>
+        
+        <a href="/docs">View API Documentation</a>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=200)
+
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, exc: HTTPException):
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>404 - Not Found</title>
+        <style>
+            body { font-family: sans-serif; background-color: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+            h1 { color: #DC2626; font-size: 4rem; margin-bottom: 0; }
+            p { color: #888; font-size: 1.5rem; }
+            a { color: #fff; background: #DC2626; padding: 10px 20px; border-radius: 5px; text-decoration: none; margin-top: 2rem; font-weight: bold; }
+            a:hover { background: #b91c1c; }
+        </style>
+    </head>
+    <body>
+        <h1>404</h1>
+        <p>Page Not Found</p>
+        <a href="/">Return Home</a>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=404)
 
 if __name__ == "__main__":
     import uvicorn
