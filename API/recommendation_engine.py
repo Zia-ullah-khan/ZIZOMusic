@@ -9,6 +9,10 @@ class RecommendationEngine:
     def __init__(self):
         self.ytmusic = YTMusic()
         os.makedirs(PROFILES_DIR, exist_ok=True)
+        try:
+            os.chmod(PROFILES_DIR, 0o777)
+        except:
+            pass
         print(f"Profiles directory: {PROFILES_DIR}")
 
     def _get_profile_path(self, user_id):
@@ -26,8 +30,23 @@ class RecommendationEngine:
 
     def _save_profile(self, user_id, profile):
         path = self._get_profile_path(user_id)
-        with open(path, "w") as f:
-            json.dump(profile, f, indent=2)
+        try:
+            with open(path, "w") as f:
+                json.dump(profile, f, indent=2)
+            try:
+                os.chmod(path, 0o666)
+            except:
+                pass
+        except PermissionError:
+            print(f"Permission denied writing to {path}. Trying to fix permissions...")
+            try:
+                os.chmod(path, 0o666)
+                with open(path, "w") as f:
+                    json.dump(profile, f, indent=2)
+            except Exception as e:
+                print(f"Failed to save profile for {user_id}: {e}")
+        except Exception as e:
+            print(f"Error saving profile: {e}")
 
     def update_profile(self, metadata, user_id):
         print(f"Updating profile for user: {user_id}")

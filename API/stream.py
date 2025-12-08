@@ -169,7 +169,10 @@ async def stream_song(song_name: str, user_id: str = None):
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    return FileResponse(r"D:\Projects\YoutubeMusic\API\favicon.png")
+    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    return HTTPException(status_code=404, detail="Favicon not found")
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
