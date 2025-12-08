@@ -30,7 +30,8 @@ export default function Home() {
 
   const fetchRecommendations = async (currentUserID: string) => {
     try {
-      let url = "http://192.168.1.153:8000/recommend";
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://192.168.1.153:8000";
+      let url = `${API_URL}/recommend`;
       if (currentUserID) {
         url += `?user_id=${currentUserID}`;
       }
@@ -78,7 +79,8 @@ export default function Home() {
     if (typeof songInput === 'string') {
         songName = songInput;
         try {
-            const res = await fetch(`http://192.168.1.153:8000/info/${encodeURIComponent(songName)}`);
+            const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://192.168.1.153:8000";
+            const res = await fetch(`${API_URL}/info/${encodeURIComponent(songName)}`);
             if (res.ok) {
                 songInfo = await res.json();
             }
@@ -118,7 +120,8 @@ export default function Home() {
         }, 60000); // 1 minute
     }
 
-    let songUrl = `http://192.168.1.153:8000/stream/${encodeURIComponent(songName)}`;
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://192.168.1.153:8000";
+    let songUrl = `${API_URL}/stream/${encodeURIComponent(songName)}`;
     if (userID) {
         songUrl += `?user_id=${userID}`;
     }
