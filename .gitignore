@@ -1,4 +1,5 @@
-*.json
+song_mappings.json
+user_profile.json
 songs
 songs/*
 .venv/
