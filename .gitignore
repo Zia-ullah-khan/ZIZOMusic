@@ -1,0 +1,6 @@
+*.json
+songs
+songs/*
+.venv/
+.vscode/
+profiles/
