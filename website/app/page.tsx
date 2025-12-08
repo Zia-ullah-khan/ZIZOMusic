@@ -30,7 +30,7 @@ export default function Home() {
 
   const fetchRecommendations = async (currentUserID: string) => {
     try {
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.zizomusic.com/";
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.zizomusic.com";
       let url = `${API_URL}/recommend`;
       if (currentUserID) {
         url += `?user_id=${currentUserID}`;
@@ -79,7 +79,7 @@ export default function Home() {
     if (typeof songInput === 'string') {
         songName = songInput;
         try {
-            const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.zizomusic.com/";
+            const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.zizomusic.com";
             const res = await fetch(`${API_URL}/info/${encodeURIComponent(songName)}`);
             if (res.ok) {
                 songInfo = await res.json();
@@ -120,7 +120,7 @@ export default function Home() {
         }, 60000); // 1 minute
     }
 
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.zizomusic.com/";
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.zizomusic.com";
     let songUrl = `${API_URL}/stream/${encodeURIComponent(songName)}`;
     if (userID) {
         songUrl += `?user_id=${userID}`;
