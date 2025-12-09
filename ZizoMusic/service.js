@@ -1,21 +1,12 @@
-module.exports = async function() {
-  let TrackPlayer = require('react-native-track-player');
-  
-  // Handle ES Module interop if necessary
-  if (TrackPlayer.default) {
-    TrackPlayer = TrackPlayer.default;
-  }
+import TrackPlayer, { Event } from 'react-native-track-player';
 
-  try {
-    TrackPlayer.addEventListener('remote-play', () => TrackPlayer.play());
-    TrackPlayer.addEventListener('remote-pause', () => TrackPlayer.pause());
-    TrackPlayer.addEventListener('remote-stop', () => TrackPlayer.reset());
-    TrackPlayer.addEventListener('remote-next', () => TrackPlayer.skipToNext());
-    TrackPlayer.addEventListener('remote-previous', () => TrackPlayer.skipToPrevious());
-    TrackPlayer.addEventListener('remote-seek', (event) => TrackPlayer.seekTo(event.position));
-    TrackPlayer.addEventListener('remote-play-id', (event) => console.log('Play from id:', event.id));
-    TrackPlayer.addEventListener('remote-play-search', (event) => console.log('Play from search:', event.query));
-  } catch (error) {
-    console.error('Error registering playback service listeners:', error);
-  }
+module.exports = async function() {
+  TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
+  TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
+  TrackPlayer.addEventListener(Event.RemoteStop, () => TrackPlayer.stop());
+  TrackPlayer.addEventListener(Event.RemoteNext, () => TrackPlayer.skipToNext());
+  TrackPlayer.addEventListener(Event.RemotePrevious, () => TrackPlayer.skipToPrevious());
+  TrackPlayer.addEventListener(Event.RemoteSeek, (event) => TrackPlayer.seekTo(event.position));
+  TrackPlayer.addEventListener(Event.RemoteJumpForward, () => TrackPlayer.seekBy(10));
+  TrackPlayer.addEventListener(Event.RemoteJumpBackward, () => TrackPlayer.seekBy(-10));
 };

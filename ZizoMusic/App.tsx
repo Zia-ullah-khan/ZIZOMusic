@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CarPlay, ListTemplate } from 'react-native-carplay';
+// import { CarPlay, ListTemplate } from 'react-native-carplay';
 import TrackPlayer, {
   Capability,
   Event,
@@ -43,7 +43,7 @@ const setupPlayer = async () => {
     await TrackPlayer.setupPlayer();
     await TrackPlayer.updateOptions({
       android: {
-        appKilledPlaybackBehavior: AppKilledPlaybackBehavior.StopPlaybackAndRemoveNotification,
+        appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
       },
       capabilities: [
         Capability.Play,
@@ -51,15 +51,23 @@ const setupPlayer = async () => {
         Capability.SkipToNext,
         Capability.SkipToPrevious,
         Capability.SeekTo,
-        Capability.PlayFromId,
-        Capability.PlayFromSearch,
+        Capability.JumpForward,
+        Capability.JumpBackward,
       ],
       compactCapabilities: [
         Capability.Play,
         Capability.Pause,
         Capability.SkipToNext,
       ],
+      notificationCapabilities: [
+        Capability.Play,
+        Capability.Pause,
+        Capability.SkipToNext,
+        Capability.SkipToPrevious,
+      ],
       progressUpdateEventInterval: 2,
+      forwardJumpInterval: 10,
+      backwardJumpInterval: 10,
     });
   } catch (e) {
     console.log("Player already setup", e);
@@ -84,25 +92,25 @@ export default function App() {
       await setupPlayer();
       setIsPlayerReady(true);
 
-      // Initialize CarPlay/Android Auto
-      const template = new ListTemplate({
-        sections: [{
-          header: "ZizoMusic",
-          items: [{ text: "Recent Songs" }, { text: "Recommendations" }]
-        }],
-        title: "ZizoMusic",
-      });
+      // Disabled CarPlay templates - using native Android Auto media browser instead
+      // const template = new ListTemplate({
+      //   sections: [{
+      //     header: "ZizoMusic",
+      //     items: [{ text: "Recent Songs" }, { text: "Recommendations" }]
+      //   }],
+      //   title: "ZizoMusic",
+      // });
 
-      const onConnect = () => {
-        console.log("CarPlay/Android Auto connected");
-        CarPlay.setRootTemplate(template);
-      };
+      // const onConnect = () => {
+      //   console.log("CarPlay/Android Auto connected");
+      //   CarPlay.setRootTemplate(template);
+      // };
 
-      CarPlay.registerOnConnect(onConnect);
+      // CarPlay.registerOnConnect(onConnect);
 
-      if (CarPlay.connected) {
-        onConnect();
-      }
+      // if (CarPlay.connected) {
+      //   onConnect();
+      // }
       
       try {
         const storedUserID = await AsyncStorage.getItem('userID');
@@ -125,9 +133,15 @@ export default function App() {
     init();
   }, []);
 
-  useTrackPlayerEvents([Event.PlaybackQueueEnded], async (event) => {
+  useTrackPlayerEvents([Event.PlaybackQueueEnded, Event.RemoteNext, Event.RemotePrevious], async (event) => {
     if (event.type === Event.PlaybackQueueEnded && isAutoplay && recommendations.length > 0) {
       playSong(recommendations[0], true);
+    }
+    if (event.type === Event.RemoteNext && recommendations.length > 0) {
+      playSong(recommendations[0], true);
+    }
+    if (event.type === Event.RemotePrevious && recentSongs.length > 0) {
+      playSong(recentSongs[0], false);
     }
   });
 
@@ -214,12 +228,14 @@ export default function App() {
         url: songUrl,
         title: songInfo?.title || songName,
         artist: songInfo?.artist || "ZIZO Music",
-        artwork: songInfo?.thumbnail,
+        artwork: songInfo?.thumbnail || undefined,
+        duration: 0,
       });
       await TrackPlayer.play();
       setStatus("Playing");
+      console.log('Track added:', { title: songInfo?.title, artist: songInfo?.artist, artwork: songInfo?.thumbnail });
     } catch (e) {
-      console.error(e);
+      console.error('Error playing song:', e);
       setStatus("Error playing");
     }
   };

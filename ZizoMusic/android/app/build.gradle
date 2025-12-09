@@ -116,4 +116,7 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Android Auto / Media Browser support
+    implementation "androidx.media:media:1.7.0"
 }
