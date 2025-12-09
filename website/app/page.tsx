@@ -191,6 +191,11 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-24 bg-black text-white">
+      <img 
+        src="/logo.png" 
+        alt="ZIZO Music Logo" 
+        className="w-64 h-auto mb-6 rounded-lg"
+      />
       <h1 className="text-4xl font-bold mb-8">ZIZO Music</h1>
       
       <div className="flex gap-4 mb-8 w-full max-w-md">
