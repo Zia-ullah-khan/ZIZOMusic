@@ -196,48 +196,30 @@ public class AutoMediaBrowserService extends MediaBrowserServiceCompat {
                 String title = currentTrack.getTitle();
                 String artist = currentTrack.getArtist();
                 String album = currentTrack.getAlbum();
-                String artworkUrl = currentTrack.getArtwork();
-                long duration = (long)(currentTrack.getDuration() * 1000);
+                android.net.Uri artworkUri = currentTrack.getArtwork();
+                Long durationMs = currentTrack.getDuration();
 
                 if (title != null) metadataBuilder.putString(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_TITLE, title);
                 if (artist != null) metadataBuilder.putString(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_ARTIST, artist);
                 if (album != null) metadataBuilder.putString(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_ALBUM, album);
-                if (duration > 0) metadataBuilder.putLong(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_DURATION, duration);
+                if (durationMs != null && durationMs > 0) metadataBuilder.putLong(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_DURATION, durationMs);
                 
                 // Try to load artwork
-                if (artworkUrl != null && !artworkUrl.isEmpty()) {
+                if (artworkUri != null) {
+                    String artworkUrl = artworkUri.toString();
                     metadataBuilder.putString(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, artworkUrl);
                     metadataBuilder.putString(android.support.v4.media.MediaMetadataCompat.METADATA_KEY_ART_URI, artworkUrl);
                 }
 
                 mediaSession.setMetadata(metadataBuilder.build());
                 
-                // Update playback state
-                com.doublesymmetry.kotlinaudio.models.AudioPlayerState state = musicService.getState();
-                int playbackState = PlaybackStateCompat.STATE_NONE;
-                if (state != null) {
-                    switch (state) {
-                        case PLAYING:
-                            playbackState = PlaybackStateCompat.STATE_PLAYING;
-                            break;
-                        case PAUSED:
-                            playbackState = PlaybackStateCompat.STATE_PAUSED;
-                            break;
-                        case STOPPED:
-                            playbackState = PlaybackStateCompat.STATE_STOPPED;
-                            break;
-                        case BUFFERING:
-                        case LOADING:
-                            playbackState = PlaybackStateCompat.STATE_BUFFERING;
-                            break;
-                        case READY:
-                            playbackState = PlaybackStateCompat.STATE_PAUSED;
-                            break;
-                        case IDLE:
-                        case ENDED:
-                            playbackState = PlaybackStateCompat.STATE_STOPPED;
-                            break;
-                    }
+                // Update playback state - check if playWhenReady to determine if playing
+                int playbackState = PlaybackStateCompat.STATE_PAUSED;
+                try {
+                    boolean isPlaying = musicService.getPlayWhenReady();
+                    playbackState = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+                } catch (Exception e) {
+                    Log.w(TAG, "Error getting playback state", e);
                 }
                 updatePlaybackState(playbackState);
             }
@@ -250,7 +232,7 @@ public class AutoMediaBrowserService extends MediaBrowserServiceCompat {
         long position = 0;
         if (bound && musicService != null) {
             try {
-                position = (long)(musicService.getPosition() * 1000);
+                position = (long)(musicService.getPositionInSeconds() * 1000);
             } catch (Exception ignored) {}
         }
 
@@ -313,11 +295,6 @@ public class AutoMediaBrowserService extends MediaBrowserServiceCompat {
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();
-        }
-        super.onDestroy();
-    }
-};
-            placeholderSession.release();
         }
         super.onDestroy();
     }
