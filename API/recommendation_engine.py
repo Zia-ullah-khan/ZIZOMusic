@@ -124,7 +124,6 @@ class RecommendationEngine:
         profile = self._load_profile(user_id)
         recommendations = []
         seen_titles = set()
-        # Compute per-search fetch size based on requested limit, with sensible bounds
         per_query_limit = min(max(5, limit), 200)
         
         if profile['history']:
@@ -189,18 +188,18 @@ class RecommendationEngine:
                     if len(recommendations) >= limit:
                         break
                         try:
-                        results = self.ytmusic.search(query=f"{artist} {tag}", filter='songs', limit=per_query_limit)
-                        for r in results:
-                            if len(recommendations) >= limit:
-                                break
-                            title = r.get('title')
-                            artists = r.get('artists', [])
-                            artist_name = artists[0]['name'] if artists else ""
-                            thumbnails = r.get('thumbnails', [])
-                            thumbnail_url = thumbnails[-1]['url'] if thumbnails else ""
-                            self._add_recommendation(recommendations, title, artist_name, thumbnail_url, seen_titles)
-                    except Exception as e:
-                        print(f"Error searching for '{artist} {tag}': {e}")
+                            results = self.ytmusic.search(query=f"{artist} {tag}", filter='songs', limit=per_query_limit)
+                            for r in results:
+                                if len(recommendations) >= limit:
+                                    break
+                                title = r.get('title')
+                                artists = r.get('artists', [])
+                                artist_name = artists[0]['name'] if artists else ""
+                                thumbnails = r.get('thumbnails', [])
+                                thumbnail_url = thumbnails[-1]['url'] if thumbnails else ""
+                                self._add_recommendation(recommendations, title, artist_name, thumbnail_url, seen_titles)
+                        except Exception as e:
+                            print(f"Error searching for '{artist} {tag}': {e}")
                 
         if not recommendations:
             return [
