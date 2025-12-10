@@ -113,7 +113,7 @@ class RecommendationEngine:
             return True
         return False
 
-    def get_recommendations(self, user_id, limit=10):
+    def get_recommendations(self, user_id, limit=50):
         if not user_id:
              return [
                 {"title": "Top 100 songs", "artist": "Charts", "thumbnail": "", "query": "Top 100 songs"},
@@ -124,6 +124,8 @@ class RecommendationEngine:
         profile = self._load_profile(user_id)
         recommendations = []
         seen_titles = set()
+        # Compute per-search fetch size based on requested limit, with sensible bounds
+        per_query_limit = min(max(5, limit), 200)
         
         if profile['history']:
             last_id = profile['history'][-1]
@@ -146,7 +148,7 @@ class RecommendationEngine:
                 if len(recommendations) >= limit:
                     break
                 try:
-                    results = self.ytmusic.search(query=f"{tag} music", filter='songs', limit=5)
+                    results = self.ytmusic.search(query=f"{tag} music", filter='songs', limit=per_query_limit)
                     for r in results:
                         if len(recommendations) >= limit:
                             break
@@ -165,7 +167,7 @@ class RecommendationEngine:
                 if len(recommendations) >= limit:
                     break
                 try:
-                    results = self.ytmusic.search(query=f"songs similar to {artist}", filter='songs', limit=5)
+                    results = self.ytmusic.search(query=f"songs similar to {artist}", filter='songs', limit=per_query_limit)
                     for r in results:
                         if len(recommendations) >= limit:
                             break
@@ -186,8 +188,8 @@ class RecommendationEngine:
                 for artist in top_artists:
                     if len(recommendations) >= limit:
                         break
-                    try:
-                        results = self.ytmusic.search(query=f"{artist} {tag}", filter='songs', limit=3)
+                        try:
+                        results = self.ytmusic.search(query=f"{artist} {tag}", filter='songs', limit=per_query_limit)
                         for r in results:
                             if len(recommendations) >= limit:
                                 break
