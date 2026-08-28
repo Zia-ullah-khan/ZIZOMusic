@@ -1,13 +1,17 @@
 from fastapi import FastAPI, HTTPException, WebSocket, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from collections import OrderedDict
 import os
+import time
 import asyncio
 import json
 import uuid
 import YouTubeMusicAPI
 from ytmusicapi import YTMusic
 from download import download_audio_from_url
+from fuzzy_search import rank_suggestions
 from recommendation_engine import RecommendationEngine
 
 app = FastAPI()
@@ -25,6 +29,18 @@ app.add_middleware(
 SONGS_DIR = "./songs"
 MAPPING_FILE = "song_mappings.json"
 os.makedirs(SONGS_DIR, exist_ok=True)
+
+SUGGESTION_CACHE_TTL = 600
+SUGGESTION_CACHE_MAX = 256
+PREFETCH_SCORE_THRESHOLD = 0.85
+
+_suggestion_cache = OrderedDict()
+_prefetching = set()
+
+
+class PrefetchRequest(BaseModel):
+    video_id: str
+    query: str = ""
 
 def load_mappings():
     if os.path.exists(MAPPING_FILE):
@@ -108,6 +124,131 @@ async def get_song_path(song_name: str, user_id: str = None):
             
     return target_file
 
+def suggestion_cache_get(key):
+    entry = _suggestion_cache.get(key)
+    if not entry:
+        return None
+    timestamp, payload = entry
+    if time.time() - timestamp > SUGGESTION_CACHE_TTL:
+        _suggestion_cache.pop(key, None)
+        return None
+    _suggestion_cache.move_to_end(key)
+    return payload
+
+def suggestion_cache_put(key, payload):
+    _suggestion_cache[key] = (time.time(), payload)
+    _suggestion_cache.move_to_end(key)
+    while len(_suggestion_cache) > SUGGESTION_CACHE_MAX:
+        _suggestion_cache.popitem(last=False)
+
+def search_songs(query, limit):
+    return ytmusic.search(query, filter="songs", limit=limit)
+
+def fetch_suggestion_texts(query):
+    try:
+        return [text for text in ytmusic.get_search_suggestions(query) if isinstance(text, str)]
+    except Exception as e:
+        print(f"Suggestion texts failed: {e}")
+        return []
+
+def is_cached(key):
+    if not key:
+        return False
+    mappings = load_mappings()
+    if key not in mappings:
+        return False
+    return os.path.exists(os.path.join(SONGS_DIR, os.path.basename(mappings[key])))
+
+async def prefetch_audio(video_id, play_key):
+    if video_id in _prefetching:
+        return
+    _prefetching.add(video_id)
+    print(f"Prefetching audio for {video_id}")
+    try:
+        url = f"https://music.youtube.com/watch?v={video_id}"
+        loop = asyncio.get_running_loop()
+        target_file, info = await loop.run_in_executor(
+            None, download_audio_from_url, url, SONGS_DIR, "%(title)s.%(ext)s"
+        )
+        if target_file:
+            filename = os.path.basename(target_file)
+            save_mapping(video_id, filename)
+            if play_key:
+                save_mapping(play_key, filename)
+            print(f"Prefetch complete: {filename}")
+    except Exception as e:
+        print(f"Prefetch failed for {video_id}: {e}")
+    finally:
+        _prefetching.discard(video_id)
+
+def maybe_prefetch_top(suggestions):
+    if not suggestions:
+        return
+    top = suggestions[0]
+    if top["score"] <= PREFETCH_SCORE_THRESHOLD:
+        return
+    play_key = f"{top['title']} {top['artist']}".strip()
+    if is_cached(top["id"]) or is_cached(play_key):
+        return
+    asyncio.create_task(prefetch_audio(top["id"], play_key))
+
+@app.get("/search/suggestions")
+async def search_suggestions(q: str, limit: int = 5):
+    query = q.strip()
+    limit = max(1, min(limit, 10))
+    if len(query) < 2:
+        return {"query": q, "suggestions": []}
+
+    cache_key = f"{query.lower()}:{limit}"
+    cached = suggestion_cache_get(cache_key)
+    if cached:
+        maybe_prefetch_top(cached["suggestions"])
+        return cached
+
+    loop = asyncio.get_running_loop()
+    results, texts = await asyncio.gather(
+        loop.run_in_executor(None, search_songs, query, limit),
+        loop.run_in_executor(None, fetch_suggestion_texts, query),
+        return_exceptions=True,
+    )
+    if isinstance(results, Exception):
+        print(f"Search failed: {results}")
+        results = []
+    if isinstance(texts, Exception):
+        texts = []
+
+    suggestions = rank_suggestions(query, results, texts, limit)
+
+    top_score = suggestions[0]["score"] if suggestions else 0.0
+    if texts and (len(suggestions) < limit or top_score < 0.6):
+        corrected = texts[0].strip()
+        if corrected and corrected.lower() != query.lower():
+            try:
+                extra = await loop.run_in_executor(None, search_songs, corrected, limit)
+                suggestions = rank_suggestions(query, list(results) + list(extra), texts, limit)
+            except Exception as e:
+                print(f"Corrected search failed: {e}")
+
+    payload = {"query": q, "suggestions": suggestions}
+    suggestion_cache_put(cache_key, payload)
+    maybe_prefetch_top(suggestions)
+    return payload
+
+@app.post("/cache/prefetch")
+async def cache_prefetch(request: PrefetchRequest):
+    video_id = request.video_id.strip()
+    if not video_id:
+        raise HTTPException(status_code=400, detail="video_id is required")
+
+    play_key = request.query.strip()
+    if is_cached(video_id) or is_cached(play_key):
+        return {"status": "cached", "video_id": video_id}
+    if video_id in _prefetching:
+        return {"status": "downloading", "video_id": video_id}
+
+    asyncio.create_task(prefetch_audio(video_id, play_key))
+    return {"status": "started", "video_id": video_id}
+
 @app.get("/recommend")
 async def recommend_songs(user_id: str = None):
     if not user_id:
@@ -126,10 +267,12 @@ def get_song_info(song_name: str):
             thumbnail_url = thumbnails[-1]['url'] if thumbnails else ""
             artists = track.get('artists', [])
             artist_name = artists[0]['name'] if artists else ""
+            duration = track.get('duration_seconds') or 0
             return {
                 "title": track.get('title'),
                 "artist": artist_name,
-                "thumbnail": thumbnail_url
+                "thumbnail": thumbnail_url,
+                "duration": duration
             }
     except Exception as e:
         print(f"Error fetching info: {e}")

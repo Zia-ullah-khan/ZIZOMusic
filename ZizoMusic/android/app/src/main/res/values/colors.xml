@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ZIZOMusic Custom CarPlay/Android Auto Palette -->
+    <color name="colorPrimary">#09090B</color>
+    <color name="colorPrimaryDark">#000000</color>
+    <color name="colorAccent">#81F7E5</color>
+    <color name="colorControlNormal">#B6DCFE</color>
+    <color name="colorIceBlue">#CDEDFD</color>
+    <color name="colorLavender">#DEC5E3</color>
+    <color name="colorLightTeal">#A9F8FB</color>
+</resources>

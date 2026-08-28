@@ -1,26 +1,120 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #070708;
+  --foreground: #ffffff;
+  --lavender: #DEC5E3;
+  --ice-blue: #CDEDFD;
+  --sky-blue: #B6DCFE;
+  --cyan: #A9F8FB;
+  --teal: #81F7E5;
 }
 
-@theme inline {
+@theme {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-lavender: var(--lavender);
+  --color-ice-blue: var(--ice-blue);
+  --color-sky-blue: var(--sky-blue);
+  --color-cyan: var(--cyan);
+  --color-teal: var(--teal);
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Web Player scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #070708;
+}
+::-webkit-scrollbar-thumb {
+  background: #1c1c24;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2a2a36;
+}
+
+/* Scrollbar hide utility for horizontal lists */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Glowing Neon drop shadows */
+.shadow-glow-cyan {
+  box-shadow: 0 16px 36px -4px rgba(169, 248, 251, 0.4);
+}
+.shadow-glow-teal {
+  box-shadow: 0 10px 24px -2px rgba(129, 247, 229, 0.35);
+}
+.shadow-glow-hover:hover {
+  box-shadow: 0 10px 24px -2px rgba(129, 247, 229, 0.25);
+  transition: all 0.3s ease;
+}
+
+/* Seeker and Volume Progress Sliders Custom Styling */
+input[type="range"].progress-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+  height: 4px;
+  width: 100%;
+  outline: none;
+  cursor: pointer;
+  position: relative;
+}
+
+input[type="range"].progress-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+}
+
+input[type="range"].progress-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  margin-top: -4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  transition: transform 0.1s ease;
+}
+
+input[type="range"].progress-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+/* Background gradients for Genre cards */
+.bg-gradient-synthwave {
+  background: linear-gradient(135deg, #DEC5E3 0%, #B6DCFE 100%);
+}
+.bg-gradient-lofi {
+  background: linear-gradient(135deg, #81F7E5 0%, #CDEDFD 100%);
+}
+.bg-gradient-techno {
+  background: linear-gradient(135deg, #A9F8FB 0%, #B6DCFE 100%);
+}
+.bg-gradient-indie {
+  background: linear-gradient(135deg, #FF9F1C 0%, #DEC5E3 100%);
+}
+.bg-gradient-hiphop {
+  background: linear-gradient(135deg, #EC4899 0%, #DEC5E3 100%);
+}
+.bg-gradient-ambient {
+  background: linear-gradient(135deg, #3B82F6 0%, #CDEDFD 100%);
 }
