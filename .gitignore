@@ -2,6 +2,8 @@ song_mappings.json
 user_profile.json
 songs
 songs/*
+hls/
+__pycache__/
 .venv/
 .vscode/
 profiles/
@@ -40,6 +42,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.development
+!.env.production
 
 # vercel
 .vercel

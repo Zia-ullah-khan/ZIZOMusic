@@ -11,6 +11,7 @@ import {
   GestureResponderEvent,
   Modal,
   Dimensions,
+  Platform,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,6 +21,7 @@ import TrackPlayer, {
   RepeatMode,
   State,
   Track,
+  TrackType,
   usePlaybackState,
   useProgress,
   useTrackPlayerEvents,
@@ -64,7 +66,9 @@ const ALBUM_PRESETS = [
   "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300", // Preset 4: Green matrix
 ];
 
-const API_URL = "https://api.zizomusic.com";
+const PRODUCTION_API_URL = "https://api.zizomusic.com";
+const DEV_API_URL = Platform.OS === "android" ? "http://10.0.2.2:8000" : "http://127.0.0.1:8000";
+const API_URL = __DEV__ ? DEV_API_URL : PRODUCTION_API_URL;
 const UPCOMING_QUEUE_SIZE = 12;
 const SUGGESTION_DEBOUNCE_MS = 220;
 const SUGGESTION_MIN_CHARS = 2;
@@ -123,7 +127,7 @@ const formatTime = (seconds: number) => {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 };
 
-const streamUrl = (songName: string, userID: string) => {
+const streamFallbackUrl = (songName: string, userID: string) => {
   let url = `${API_URL}/stream/${encodeURIComponent(songName)}`;
   if (userID) {
     url += `?user_id=${userID}`;
@@ -131,9 +135,35 @@ const streamUrl = (songName: string, userID: string) => {
   return url;
 };
 
-const toPlayerTrack = (songName: string, info: SongInfo | null, userID: string): Track => ({
+interface ResolvedStream {
+  url: string;
+  type?: TrackType;
+}
+
+const resolveStream = async (songName: string, userID: string): Promise<ResolvedStream> => {
+  const userParam = userID ? `?user_id=${userID}` : "";
+  const fallback: ResolvedStream = { url: streamFallbackUrl(songName, userID) };
+
+  try {
+    const res = await fetch(`${API_URL}/play/${encodeURIComponent(songName)}${userParam}`);
+    if (!res.ok) {
+      return fallback;
+    }
+    const data = await res.json();
+    return {
+      url: `${API_URL}${data.url}`,
+      type: data.type === "hls" ? TrackType.HLS : undefined,
+    };
+  } catch (e) {
+    console.log("Stream resolve failed, using direct stream", e);
+    return fallback;
+  }
+};
+
+const toPlayerTrack = (songName: string, info: SongInfo | null, stream: ResolvedStream): Track => ({
   id: songName,
-  url: streamUrl(songName, userID),
+  url: stream.url,
+  type: stream.type,
   title: info?.title || songName,
   artist: info?.artist || "ZIZO Music",
   artwork: info?.thumbnail || undefined,
@@ -142,7 +172,13 @@ const toPlayerTrack = (songName: string, info: SongInfo | null, userID: string):
 
 const setupPlayer = async () => {
   try {
-    await TrackPlayer.setupPlayer();
+    await TrackPlayer.setupPlayer({
+      minBuffer: 60,
+      maxBuffer: 300,
+      playBuffer: 1.5,
+      backBuffer: 30,
+      maxCacheSize: 256 * 1024,
+    });
     await TrackPlayer.updateOptions({
       android: {
         appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
@@ -436,10 +472,16 @@ export default function App() {
   const enqueueUpcoming = async (excludeId: string) => {
     const queue = await TrackPlayer.getQueue();
     const queuedIds = new Set(queue.map(track => String(track.id)));
-    const upcoming = recommendationsRef.current
+    const upcomingRecs = recommendationsRef.current
       .filter(rec => rec.query && rec.query !== excludeId && !queuedIds.has(rec.query))
-      .slice(0, UPCOMING_QUEUE_SIZE)
-      .map(rec => toPlayerTrack(rec.query, rec, userIDRef.current));
+      .slice(0, UPCOMING_QUEUE_SIZE);
+
+    const upcoming = await Promise.all(
+      upcomingRecs.map(async rec => {
+        const stream = await resolveStream(rec.query, userIDRef.current);
+        return toPlayerTrack(rec.query, rec, stream);
+      })
+    );
 
     if (upcoming.length > 0) {
       await TrackPlayer.add(upcoming);
@@ -574,17 +616,13 @@ export default function App() {
 
     let songName = "";
     let songInfo: SongInfo | null = null;
+    let infoPromise: Promise<SongInfo | null> | null = null;
 
     if (typeof songInput === 'string') {
         songName = songInput;
-        try {
-            const res = await fetch(`${API_URL}/info/${encodeURIComponent(songName)}`);
-            if (res.ok) {
-                songInfo = await res.json();
-            }
-        } catch (e) {
-            console.error(e);
-        }
+        infoPromise = fetch(`${API_URL}/info/${encodeURIComponent(songName)}`)
+          .then(res => (res.ok ? res.json() : null))
+          .catch(() => null);
     } else {
         songName = songInput.query;
         songInfo = {
@@ -597,20 +635,34 @@ export default function App() {
     if (!songName) return;
 
     setQuery(songName);
-    if (songInfo) setCurrentSong(songInfo);
+    setCurrentSong(songInfo || { title: songName, artist: "", thumbnail: "" });
     setStatus("Searching & Loading...");
     setRecommendations(prev => prev.filter(r => r.query !== songName));
     addToHistory(songName);
 
     try {
+      const stream = await resolveStream(songName, userIDRef.current);
       await TrackPlayer.reset();
-      await TrackPlayer.add(toPlayerTrack(songName, songInfo, userIDRef.current));
-      await enqueueUpcoming(songName);
+      await TrackPlayer.add(toPlayerTrack(songName, songInfo, stream));
       await TrackPlayer.play();
       setStatus("Playing");
+      enqueueUpcoming(songName).catch(err => console.error("Failed to enqueue upcoming", err));
     } catch (e) {
       console.error('Error playing song:', e);
       setStatus("Error playing");
+    }
+
+    if (infoPromise) {
+      infoPromise.then(info => {
+        if (!info) return;
+        setCurrentSong(info);
+        TrackPlayer.updateMetadataForTrack(0, {
+          title: info.title,
+          artist: info.artist,
+          artwork: info.thumbnail || undefined,
+          duration: info.duration && info.duration > 0 ? info.duration : undefined,
+        }).catch(() => {});
+      });
     }
   };
 

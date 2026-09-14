@@ -3,7 +3,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from collections import OrderedDict
+from urllib.parse import quote
 import os
+import re
 import time
 import asyncio
 import json
@@ -13,8 +15,12 @@ from ytmusicapi import YTMusic
 from download import download_audio_from_url
 from fuzzy_search import rank_suggestions
 from recommendation_engine import RecommendationEngine
+import hls
 
 app = FastAPI()
+
+if not hls.ffmpeg_available():
+    print("WARNING: ffmpeg not found, adaptive HLS streaming disabled, falling back to direct streams")
 rec_engine = RecommendationEngine()
 ytmusic = YTMusic()
 
@@ -71,7 +77,27 @@ async def update_profile_async(song_name, user_id):
     except Exception as e:
         print(f"Error updating profile async: {e}")
 
-async def get_song_path(song_name: str, user_id: str = None):
+_song_locks = {}
+PREWARM_COUNT = 1
+SONG_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
+VARIANT_PATTERN = re.compile(r"^v\d{2,3}$")
+SEGMENT_PATTERN = re.compile(r"^(seg\d{4}\.ts|playlist\.m3u8)$")
+
+
+def _lock_for(song_name):
+    lock = _song_locks.get(song_name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _song_locks[song_name] = lock
+    return lock
+
+
+async def get_song_path(song_name: str, user_id: str = None, priority: bool = True):
+    async with _lock_for(song_name):
+        return await _get_song_path(song_name, user_id, priority)
+
+
+async def _get_song_path(song_name: str, user_id: str = None, priority: bool = True):
     mappings = load_mappings()
     if song_name in mappings:
         mapped_file = mappings[song_name]
@@ -108,7 +134,14 @@ async def get_song_path(song_name: str, user_id: str = None):
             results = await loop.run_in_executor(None, YouTubeMusicAPI.search, song_name)
             if results and 'url' in results:
                 url = results['url']
-                result = await loop.run_in_executor(None, download_audio_from_url, url, SONGS_DIR, "%(title)s.%(ext)s")
+                result = await loop.run_in_executor(
+                    None,
+                    download_audio_from_url,
+                    url,
+                    SONGS_DIR,
+                    "%(title)s.%(ext)s",
+                    priority,
+                )
                 target_file, info = result
                 
                 if user_id:
@@ -165,10 +198,10 @@ async def prefetch_audio(video_id, play_key):
     _prefetching.add(video_id)
     print(f"Prefetching audio for {video_id}")
     try:
-        url = f"https://music.youtube.com/watch?v={video_id}"
+        url = f"https://www.youtube.com/watch?v={video_id}"
         loop = asyncio.get_running_loop()
         target_file, info = await loop.run_in_executor(
-            None, download_audio_from_url, url, SONGS_DIR, "%(title)s.%(ext)s"
+            None, download_audio_from_url, url, SONGS_DIR, "%(title)s.%(ext)s", False
         )
         if target_file:
             filename = os.path.basename(target_file)
@@ -176,6 +209,9 @@ async def prefetch_audio(video_id, play_key):
             if play_key:
                 save_mapping(play_key, filename)
             print(f"Prefetch complete: {filename}")
+            if hls.ffmpeg_available():
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, hls.build_hls, target_file)
     except Exception as e:
         print(f"Prefetch failed for {video_id}: {e}")
     finally:
@@ -249,12 +285,28 @@ async def cache_prefetch(request: PrefetchRequest):
     asyncio.create_task(prefetch_audio(video_id, play_key))
     return {"status": "started", "video_id": video_id}
 
+async def prewarm_song(song_name: str):
+    try:
+        target_file = await get_song_path(song_name, priority=False)
+        if target_file and os.path.exists(target_file) and hls.ffmpeg_available():
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, hls.build_hls, target_file)
+    except Exception as e:
+        print(f"Prewarm failed for {song_name}: {e}")
+
+
 @app.get("/recommend")
 async def recommend_songs(user_id: str = None):
     if not user_id:
         user_id = str(uuid.uuid4())
     
     recommendations = rec_engine.get_recommendations(user_id)
+
+    for rec in recommendations[:PREWARM_COUNT]:
+        query = rec.get("query") if isinstance(rec, dict) else None
+        if query and len(query) < 80:
+            asyncio.create_task(prewarm_song(query))
+
     return {"user_id": user_id, "recommendations": recommendations}
 
 @app.get("/info/{song_name}")
@@ -298,6 +350,48 @@ async def websocket_endpoint(websocket: WebSocket, song_name: str):
             await websocket.close(code=1000, reason="Song not found")
     except Exception as e:
         print(f"WebSocket error: {e}")
+
+@app.get("/play/{song_name}")
+async def play_song(song_name: str, user_id: str = None):
+    target_file = await get_song_path(song_name, user_id)
+    if not target_file or not os.path.exists(target_file):
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    if hls.ffmpeg_available():
+        try:
+            loop = asyncio.get_running_loop()
+            song_id = await loop.run_in_executor(None, hls.build_hls, target_file)
+            return {"type": "hls", "url": f"/hls/{song_id}/master.m3u8"}
+        except Exception as e:
+            print(f"HLS transcode failed, falling back to direct stream: {e}")
+
+    return {"type": "default", "url": f"/stream/{quote(song_name)}"}
+
+
+@app.get("/hls/{song_id}/master.m3u8")
+async def hls_master(song_id: str):
+    if not SONG_ID_PATTERN.match(song_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    path = hls.hls_path(song_id, "master.m3u8")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return FileResponse(path, media_type="application/vnd.apple.mpegurl")
+
+
+@app.get("/hls/{song_id}/{variant}/{filename}")
+async def hls_media(song_id: str, variant: str, filename: str):
+    if not (SONG_ID_PATTERN.match(song_id) and VARIANT_PATTERN.match(variant) and SEGMENT_PATTERN.match(filename)):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    path = hls.hls_path(song_id, variant, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    media_type = "application/vnd.apple.mpegurl" if filename.endswith(".m3u8") else "video/mp2t"
+    return FileResponse(path, media_type=media_type)
+
 
 @app.get("/stream/{song_name}")
 async def stream_song(song_name: str, user_id: str = None):

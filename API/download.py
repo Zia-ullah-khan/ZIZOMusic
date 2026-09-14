@@ -1,33 +1,119 @@
-import yt_dlp
 import os
+import re
+import shutil
+import threading
+import yt_dlp
 
-def download_audio_from_url(url, output_dir="./downloads", filename_template="%(title)s.%(ext)s"):
-    """
-    Downloads audio from the given URL using yt-dlp.
+_state = threading.Condition()
+_user_waiters = 0
+_busy = False
 
-    Parameters:
-    - url (str): The URL of the video to download audio from.
-    - output_dir (str): The directory where the downloaded audio will be saved.
-    - filename_template (str): The template for naming the downloaded file.
+_WATCH_ID = re.compile(
+    r"(?:v=|/watch(?:\?|/.+\?)v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})"
+)
 
-    Returns:
-    - str: The path to the downloaded audio file.
-    """
-    os.makedirs(output_dir, exist_ok=True)
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': os.path.join(output_dir, filename_template),
-        # Uncomment the following lines to convert to mp3 if ffmpeg is installed
-        # 'postprocessors': [{
-        #     'key': 'FFmpegExtractAudio',
-        #     'preferredcodec': 'mp3',
-        #     'preferredquality': '192',
-        # }],
+def normalize_youtube_url(url):
+    if not url:
+        return url
+    match = _WATCH_ID.search(url)
+    if match:
+        return f"https://www.youtube.com/watch?v={match.group(1)}"
+    return url
+
+
+def _js_runtimes():
+    runtimes = {}
+    if shutil.which("node"):
+        runtimes["node"] = {}
+    if shutil.which("deno"):
+        runtimes["deno"] = {}
+    if shutil.which("bun"):
+        runtimes["bun"] = {}
+    return runtimes or {"node": {}}
+
+
+def _acquire(priority):
+    global _user_waiters, _busy
+    with _state:
+        if priority:
+            _user_waiters += 1
+        while _busy or (not priority and _user_waiters > 0):
+            _state.wait()
+        _busy = True
+
+
+def _release(priority):
+    global _user_waiters, _busy
+    with _state:
+        _busy = False
+        if priority:
+            _user_waiters -= 1
+        _state.notify_all()
+
+
+def _base_opts(output_dir, filename_template):
+    return {
+        "outtmpl": os.path.join(output_dir, filename_template),
+        "noplaylist": True,
+        "quiet": False,
+        "no_warnings": False,
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_retries": 3,
+        "concurrent_fragment_downloads": 1,
+        "js_runtimes": _js_runtimes(),
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com",
+        },
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
 
-    return filename, info
+_ATTEMPTS = [
+    {
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[height<=360]/best",
+    },
+    {
+        "format": "bestaudio/best/18",
+        "extractor_args": {"youtube": {"player_client": ["web_safari", "visionos", "tv"]}},
+    },
+]
+
+
+def download_audio_from_url(
+    url,
+    output_dir="./downloads",
+    filename_template="%(title)s.%(ext)s",
+    priority=False,
+):
+    os.makedirs(output_dir, exist_ok=True)
+    url = normalize_youtube_url(url)
+    last_error = None
+    _acquire(priority)
+
+    try:
+        for attempt in _ATTEMPTS:
+            opts = _base_opts(output_dir, filename_template)
+            opts.update(attempt)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    downloads = info.get("requested_downloads") or []
+                    if downloads:
+                        filename = downloads[0].get("filepath") or filename
+                    if filename and os.path.exists(filename):
+                        return filename, info
+                    last_error = RuntimeError(f"Download finished without a file: {filename}")
+            except Exception as e:
+                last_error = e
+                print(f"Download attempt failed ({attempt.get('format')}): {e}")
+    finally:
+        _release(priority)
+
+    raise last_error or RuntimeError(f"Failed to download {url}")

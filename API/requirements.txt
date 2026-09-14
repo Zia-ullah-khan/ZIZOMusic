@@ -25,7 +25,8 @@ urllib3==2.6.0
 uvicorn==0.38.0
 websocket==0.2.1
 YouTubeMusicAPI==2.9.1
-yt-dlp==2025.12.8
+yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
 ytmusicapi==1.11.3
 zope.event==6.1
 zope.interface==8.1.1

@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
+import Hls from "hls.js";
+import { API_URL } from "@/lib/api";
 
 interface Recommendation {
   title: string;
@@ -39,8 +41,6 @@ const ALBUM_PRESETS = [
   "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300", // Preset 4
 ];
 
-const API_URL = "https://api.zizomusic.com";
-
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"home" | "search" | "library">("home");
   const [showFullPlayer, setShowFullPlayer] = useState(false);
@@ -70,8 +70,51 @@ export default function Home() {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const historyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suggestionTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const destroyHls = () => {
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+  };
+
+  const attachStream = (url: string, isHls: boolean) => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return Promise.reject(new Error("Audio element missing"));
+    }
+
+    destroyHls();
+    audio.volume = volume;
+
+    if (isHls && Hls.isSupported()) {
+      const instance = new Hls({
+        enableWorker: true,
+        maxBufferLength: 60,
+        maxMaxBufferLength: 300,
+        maxBufferSize: 60 * 1000 * 1000,
+      });
+      hlsRef.current = instance;
+      instance.loadSource(url);
+      instance.attachMedia(audio);
+      return new Promise<void>((resolve, reject) => {
+        instance.on(Hls.Events.MANIFEST_PARSED, () => {
+          audio.play().then(() => resolve()).catch(reject);
+        });
+        instance.on(Hls.Events.ERROR, (_event, data) => {
+          if (data.fatal) {
+            reject(data);
+          }
+        });
+      });
+    }
+
+    audio.src = url;
+    return audio.play().then(() => undefined);
+  };
 
   const fetchRecommendations = async (currentUserID: string) => {
     try {
@@ -150,17 +193,13 @@ export default function Home() {
   const playSong = async (songInput: string | Recommendation, isAutoplayTriggered = false) => {
     let songName = "";
     let songInfo: SongInfo | null = null;
+    let infoPromise: Promise<SongInfo | null> | null = null;
 
     if (typeof songInput === "string") {
         songName = songInput;
-        try {
-            const res = await fetch(`${API_URL}/info/${encodeURIComponent(songName)}`);
-            if (res.ok) {
-                songInfo = await res.json();
-            }
-        } catch (e) {
-            console.error(e);
-        }
+        infoPromise = fetch(`${API_URL}/info/${encodeURIComponent(songName)}`)
+          .then(res => (res.ok ? res.json() : null))
+          .catch(() => null);
     } else {
         songName = songInput.query;
         songInfo = {
@@ -178,7 +217,7 @@ export default function Home() {
     }
 
     setQuery(songName);
-    if (songInfo) setCurrentSong(songInfo);
+    setCurrentSong(songInfo || { title: songName, artist: "", thumbnail: "" });
     setStatus("Searching & Loading...");
     setRecommendations(prev => prev.filter(r => r.query !== songName));
 
@@ -190,29 +229,48 @@ export default function Home() {
         }, 60000);
     }
 
-    let songUrl = `${API_URL}/stream/${encodeURIComponent(songName)}`;
-    if (userID) {
-        songUrl += `?user_id=${userID}`;
-    }
-    
-    if (audioRef.current) {
-      audioRef.current.src = songUrl;
-      audioRef.current.play().then(() => {
-        setStatus("Playing");
-        setIsPlaying(true);
+    const userParam = userID ? `?user_id=${userID}` : "";
+    let songUrl = `${API_URL}/stream/${encodeURIComponent(songName)}${userParam}`;
+    let isHls = false;
 
-        if ("mediaSession" in navigator) {
-            navigator.mediaSession.metadata = new MediaMetadata({
-                title: songInfo?.title || songName,
-                artist: songInfo?.artist || "ZIZO Music",
-                artwork: songInfo?.thumbnail ? [
-                    { src: songInfo.thumbnail, sizes: "512x512", type: "image/jpeg" }
-                ] : []
-            });
-        }
-      }).catch(e => {
-        console.error(e);
-        setStatus("Error playing");
+    try {
+      const playRes = await fetch(`${API_URL}/play/${encodeURIComponent(songName)}${userParam}`);
+      if (playRes.ok) {
+        const playData = await playRes.json();
+        songUrl = `${API_URL}${playData.url}`;
+        isHls = playData.type === "hls";
+      }
+    } catch (e) {
+      console.log("Stream resolve failed, using direct stream", e);
+    }
+
+    const applyMetadata = (info: SongInfo | null) => {
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: info?.title || songName,
+          artist: info?.artist || "ZIZO Music",
+          artwork: info?.thumbnail ? [
+            { src: info.thumbnail, sizes: "512x512", type: "image/jpeg" }
+          ] : []
+        });
+      }
+    };
+
+    try {
+      await attachStream(songUrl, isHls);
+      setStatus("Playing");
+      setIsPlaying(true);
+      applyMetadata(songInfo);
+    } catch (e) {
+      console.error(e);
+      setStatus("Error playing");
+    }
+
+    if (infoPromise) {
+      infoPromise.then(info => {
+        if (!info) return;
+        setCurrentSong(info);
+        applyMetadata(info);
       });
     }
   };
@@ -246,6 +304,8 @@ export default function Home() {
   useEffect(() => {
     return () => {
       if (historyTimeoutRef.current) clearTimeout(historyTimeoutRef.current);
+      if (suggestionTimerRef.current) clearTimeout(suggestionTimerRef.current);
+      destroyHls();
     };
   }, []);
 
