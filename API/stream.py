@@ -1,35 +1,63 @@
-from fastapi import FastAPI, HTTPException, WebSocket, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 from collections import OrderedDict
-from urllib.parse import quote
 import os
 import re
 import time
 import asyncio
 import json
-import uuid
 import YouTubeMusicAPI
 from ytmusicapi import YTMusic
 from download import download_audio_from_url
 from fuzzy_search import rank_suggestions
 from recommendation_engine import RecommendationEngine
+from thumbs import pick_thumbnail
 import hls
+from security import (
+    MAX_SONG_NAME_LEN,
+    SecurityHeadersMiddleware,
+    allowed_hosts,
+    attach_session_if_needed,
+    cors_origins,
+    ensure_session,
+    enforce_rate_limit,
+    is_valid_video_id,
+    issue_session_token,
+    require_media_access,
+    session_from_request,
+    rewrite_m3u8,
+    sanitize_song_name,
+    session_from_websocket,
+    set_session_cookie,
+    signed_hls_master_path,
+    signed_stream_path,
+)
 
-app = FastAPI()
+_DEBUG = os.environ.get("ZIZO_DEBUG", "").lower() in ("1", "true", "yes")
+app = FastAPI(
+    docs_url="/docs" if _DEBUG else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if _DEBUG else None,
+)
 
 if not hls.ffmpeg_available():
     print("WARNING: ffmpeg not found, adaptive HLS streaming disabled, falling back to direct streams")
 rec_engine = RecommendationEngine()
 ytmusic = YTMusic()
 
+app.add_middleware(GZipMiddleware, minimum_size=500)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 SONGS_DIR = "./songs"
@@ -53,7 +81,8 @@ def load_mappings():
         try:
             with open(MAPPING_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"Failed to load mappings: {e}")
             return {}
     return {}
 
@@ -81,7 +110,16 @@ _song_locks = {}
 PREWARM_COUNT = 1
 SONG_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 VARIANT_PATTERN = re.compile(r"^v\d{2,3}$")
-SEGMENT_PATTERN = re.compile(r"^(seg\d{4}\.ts|playlist\.m3u8)$")
+SEGMENT_PATTERN = re.compile(r"^(seg\d{4}\.(ts|m4s)|init\.mp4|playlist\.m3u8)$")
+STREAM_MIME = {
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".webm": "audio/webm",
+    ".opus": "audio/ogg",
+    ".ogg": "audio/ogg",
+    ".mp3": "audio/mpeg",
+}
 
 
 def _lock_for(song_name):
@@ -98,6 +136,7 @@ async def get_song_path(song_name: str, user_id: str = None, priority: bool = Tr
 
 
 async def _get_song_path(song_name: str, user_id: str = None, priority: bool = True):
+    song_name = sanitize_song_name(song_name)
     mappings = load_mappings()
     if song_name in mappings:
         mapped_file = mappings[song_name]
@@ -193,6 +232,9 @@ def is_cached(key):
     return os.path.exists(os.path.join(SONGS_DIR, os.path.basename(mappings[key])))
 
 async def prefetch_audio(video_id, play_key):
+    if not is_valid_video_id(video_id):
+        print("Rejected invalid video_id")
+        return
     if video_id in _prefetching:
         return
     _prefetching.add(video_id)
@@ -211,7 +253,7 @@ async def prefetch_audio(video_id, play_key):
             print(f"Prefetch complete: {filename}")
             if hls.ffmpeg_available():
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, hls.build_hls, target_file)
+                await loop.run_in_executor(None, hls.build_hls, target_file, False)
     except Exception as e:
         print(f"Prefetch failed for {video_id}: {e}")
     finally:
@@ -228,18 +270,36 @@ def maybe_prefetch_top(suggestions):
         return
     asyncio.create_task(prefetch_audio(top["id"], play_key))
 
+@app.post("/session")
+async def create_session(request: Request, client: str = ""):
+    enforce_rate_limit(request, "session", 20, 60)
+    user_id, token = ensure_session(request)
+    if token is None:
+        token = issue_session_token(user_id)
+    payload = {"ok": True, "user_id": user_id}
+    if client == "native":
+        payload["token"] = token
+    response = JSONResponse(payload)
+    set_session_cookie(response, token, request)
+    return response
+
+
 @app.get("/search/suggestions")
-async def search_suggestions(q: str, limit: int = 5):
+async def search_suggestions(request: Request, q: str, limit: int = 5):
+    enforce_rate_limit(request, "search", 30, 60)
+    user_id, token = ensure_session(request)
     query = q.strip()
     limit = max(1, min(limit, 10))
+    if len(query) > MAX_SONG_NAME_LEN:
+        raise HTTPException(status_code=400, detail="Query too long")
     if len(query) < 2:
-        return {"query": q, "suggestions": []}
+        return attach_session_if_needed(JSONResponse({"query": q, "suggestions": []}), request, token)
 
     cache_key = f"{query.lower()}:{limit}"
     cached = suggestion_cache_get(cache_key)
     if cached:
         maybe_prefetch_top(cached["suggestions"])
-        return cached
+        return attach_session_if_needed(JSONResponse(cached), request, token)
 
     loop = asyncio.get_running_loop()
     results, texts = await asyncio.gather(
@@ -268,59 +328,74 @@ async def search_suggestions(q: str, limit: int = 5):
     payload = {"query": q, "suggestions": suggestions}
     suggestion_cache_put(cache_key, payload)
     maybe_prefetch_top(suggestions)
-    return payload
+    return attach_session_if_needed(JSONResponse(payload), request, token)
 
 @app.post("/cache/prefetch")
-async def cache_prefetch(request: PrefetchRequest):
-    video_id = request.video_id.strip()
-    if not video_id:
-        raise HTTPException(status_code=400, detail="video_id is required")
+async def cache_prefetch(request: Request, body: PrefetchRequest):
+    enforce_rate_limit(request, "prefetch", 10, 60)
+    user_id, token = ensure_session(request)
+    video_id = body.video_id.strip()
+    if not is_valid_video_id(video_id):
+        raise HTTPException(status_code=400, detail="Invalid video_id")
 
-    play_key = request.query.strip()
+    play_key = body.query.strip()[:MAX_SONG_NAME_LEN]
     if is_cached(video_id) or is_cached(play_key):
-        return {"status": "cached", "video_id": video_id}
+        return attach_session_if_needed(
+            JSONResponse({"status": "cached", "video_id": video_id}), request, token
+        )
     if video_id in _prefetching:
-        return {"status": "downloading", "video_id": video_id}
+        return attach_session_if_needed(
+            JSONResponse({"status": "downloading", "video_id": video_id}), request, token
+        )
 
     asyncio.create_task(prefetch_audio(video_id, play_key))
-    return {"status": "started", "video_id": video_id}
+    return attach_session_if_needed(
+        JSONResponse({"status": "started", "video_id": video_id}), request, token
+    )
 
 async def prewarm_song(song_name: str):
     try:
         target_file = await get_song_path(song_name, priority=False)
         if target_file and os.path.exists(target_file) and hls.ffmpeg_available():
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, hls.build_hls, target_file)
+            await loop.run_in_executor(None, hls.build_hls, target_file, False)
     except Exception as e:
         print(f"Prewarm failed for {song_name}: {e}")
 
 
 @app.get("/recommend")
-async def recommend_songs(user_id: str = None):
-    if not user_id:
-        user_id = str(uuid.uuid4())
-    
-    recommendations = rec_engine.get_recommendations(user_id)
+async def recommend_songs(request: Request, limit: int = 12):
+    enforce_rate_limit(request, "recommend", 10, 60)
+    user_id, token = ensure_session(request)
+    limit = max(1, min(int(limit), 50))
+    recommendations = rec_engine.get_recommendations(user_id, limit=limit)
 
     for rec in recommendations[:PREWARM_COUNT]:
         query = rec.get("query") if isinstance(rec, dict) else None
         if query and len(query) < 80:
             asyncio.create_task(prewarm_song(query))
 
-    return {"user_id": user_id, "recommendations": recommendations}
+    return attach_session_if_needed(
+        JSONResponse({"user_id": user_id, "recommendations": recommendations}),
+        request,
+        token,
+    )
 
 @app.get("/info/{song_name}")
-def get_song_info(song_name: str):
+async def get_song_info(request: Request, song_name: str):
+    enforce_rate_limit(request, "info", 30, 60)
+    user_id, token = ensure_session(request)
+    song_name = sanitize_song_name(song_name)
+    payload = {"title": song_name, "artist": "Unknown", "thumbnail": ""}
     try:
         results = ytmusic.search(song_name, filter='songs', limit=1)
         if results:
             track = results[0]
-            thumbnails = track.get('thumbnails', [])
-            thumbnail_url = thumbnails[-1]['url'] if thumbnails else ""
+            thumbnail_url = pick_thumbnail(track.get('thumbnails', []))
             artists = track.get('artists', [])
             artist_name = artists[0]['name'] if artists else ""
             duration = track.get('duration_seconds') or 0
-            return {
+            payload = {
                 "title": track.get('title'),
                 "artist": artist_name,
                 "thumbnail": thumbnail_url,
@@ -328,14 +403,16 @@ def get_song_info(song_name: str):
             }
     except Exception as e:
         print(f"Error fetching info: {e}")
-    return {"title": song_name, "artist": "Unknown", "thumbnail": ""}
+    return attach_session_if_needed(JSONResponse(payload), request, token)
 
 @app.websocket("/ws/stream/{song_name}")
 async def websocket_endpoint(websocket: WebSocket, song_name: str):
+    if not session_from_websocket(websocket):
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     try:
         target_file = await get_song_path(song_name)
-        
         if target_file and os.path.exists(target_file):
             chunk_size = 4096 * 4
             with open(target_file, "rb") as f:
@@ -352,7 +429,10 @@ async def websocket_endpoint(websocket: WebSocket, song_name: str):
         print(f"WebSocket error: {e}")
 
 @app.get("/play/{song_name}")
-async def play_song(song_name: str, user_id: str = None):
+async def play_song(request: Request, song_name: str):
+    enforce_rate_limit(request, "play", 20, 60)
+    user_id, token = ensure_session(request)
+    song_name = sanitize_song_name(song_name)
     target_file = await get_song_path(song_name, user_id)
     if not target_file or not os.path.exists(target_file):
         raise HTTPException(status_code=404, detail="Song not found")
@@ -360,108 +440,112 @@ async def play_song(song_name: str, user_id: str = None):
     if hls.ffmpeg_available():
         try:
             loop = asyncio.get_running_loop()
-            song_id = await loop.run_in_executor(None, hls.build_hls, target_file)
-            return {"type": "hls", "url": f"/hls/{song_id}/master.m3u8"}
+            song_id = await loop.run_in_executor(None, hls.build_hls, target_file, True)
+            payload = {"type": "hls", "url": signed_hls_master_path(song_id)}
+            return attach_session_if_needed(JSONResponse(payload), request, token)
         except Exception as e:
             print(f"HLS transcode failed, falling back to direct stream: {e}")
 
-    return {"type": "default", "url": f"/stream/{quote(song_name)}"}
+    payload = {"type": "default", "url": signed_stream_path(song_name)}
+    return attach_session_if_needed(JSONResponse(payload), request, token)
+
+
+def _hls_cache_headers(filename: str):
+    if filename.endswith(".m3u8"):
+        return {"Cache-Control": "public, max-age=15"}
+    return {"Cache-Control": "public, max-age=31536000, immutable"}
 
 
 @app.get("/hls/{song_id}/master.m3u8")
-async def hls_master(song_id: str):
+async def hls_master(request: Request, song_id: str):
     if not SONG_ID_PATTERN.match(song_id):
         raise HTTPException(status_code=404, detail="Not found")
+    require_media_access(request, f"hls:{song_id}")
 
     path = hls.hls_path(song_id, "master.m3u8")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Not found")
 
-    return FileResponse(path, media_type="application/vnd.apple.mpegurl")
+    with open(path, "r", encoding="utf-8") as handle:
+        body = handle.read()
+    exp = request.query_params.get("exp")
+    sig = request.query_params.get("sig")
+    if exp and sig:
+        body = rewrite_m3u8(body, exp, sig)
+    return Response(
+        content=body,
+        media_type="application/vnd.apple.mpegurl",
+        headers=_hls_cache_headers("master.m3u8"),
+    )
 
 
 @app.get("/hls/{song_id}/{variant}/{filename}")
-async def hls_media(song_id: str, variant: str, filename: str):
+async def hls_media(request: Request, song_id: str, variant: str, filename: str):
     if not (SONG_ID_PATTERN.match(song_id) and VARIANT_PATTERN.match(variant) and SEGMENT_PATTERN.match(filename)):
         raise HTTPException(status_code=404, detail="Not found")
+    require_media_access(request, f"hls:{song_id}")
 
     path = hls.hls_path(song_id, variant, filename)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Not found")
 
-    media_type = "application/vnd.apple.mpegurl" if filename.endswith(".m3u8") else "video/mp2t"
-    return FileResponse(path, media_type=media_type)
+    if filename.endswith(".m3u8"):
+        with open(path, "r", encoding="utf-8") as handle:
+            body = handle.read()
+        exp = request.query_params.get("exp")
+        sig = request.query_params.get("sig")
+        if exp and sig:
+            body = rewrite_m3u8(body, exp, sig)
+        return Response(
+            content=body,
+            media_type="application/vnd.apple.mpegurl",
+            headers=_hls_cache_headers(filename),
+        )
+
+    if filename.endswith(".m4s") or filename.endswith(".mp4"):
+        media_type = "audio/mp4"
+    else:
+        media_type = "video/mp2t"
+    return FileResponse(path, media_type=media_type, headers=_hls_cache_headers(filename))
 
 
 @app.get("/stream/{song_name}")
-async def stream_song(song_name: str, user_id: str = None):
-    """
-    Streams a song. If the song doesn't exist, it tries to download it first.
-    """
+async def stream_song(request: Request, song_name: str):
+    enforce_rate_limit(request, "stream", 20, 60)
+    song_name = sanitize_song_name(song_name)
+    require_media_access(request, f"stream:{song_name}")
+    user_id = session_from_request(request)
     target_file = await get_song_path(song_name, user_id)
     if target_file and os.path.exists(target_file):
-        return FileResponse(target_file, media_type="audio/mpeg", filename=os.path.basename(target_file))
-    else:
-        raise HTTPException(status_code=404, detail="File not found")
+        ext = os.path.splitext(target_file)[1].lower()
+        media_type = STREAM_MIME.get(ext, "application/octet-stream")
+        return FileResponse(target_file, media_type=media_type)
+    raise HTTPException(status_code=404, detail="File not found")
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+    small = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon-16.png")
+    large = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+    file_path = small if os.path.exists(small) else large
     if os.path.exists(file_path):
-        return FileResponse(file_path)
-    return HTTPException(status_code=404, detail="Favicon not found")
+        return FileResponse(file_path, headers={"Cache-Control": "public, max-age=31536000"})
+    raise HTTPException(status_code=404, detail="Favicon not found")
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    songs_count = len(os.listdir(SONGS_DIR)) if os.path.exists(SONGS_DIR) else 0
-    
-    mappings_count = 0
-    if os.path.exists(MAPPING_FILE):
-        try:
-            with open(MAPPING_FILE, "r") as f:
-                mappings_count = len(json.load(f))
-        except:
-            pass
-            
-    profiles_dir = os.path.join("API", "profiles")
-    profiles_count = len(os.listdir(profiles_dir)) if os.path.exists(profiles_dir) else 0
-
-    html_content = f"""
+    html_content = """
     <!DOCTYPE html>
     <html>
     <head>
         <title>ZIZO Music API</title>
         <style>
-            body {{ font-family: sans-serif; background-color: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
-            h1 {{ color: #DC2626; font-size: 3rem; margin-bottom: 1rem; }}
-            .stats {{ display: flex; gap: 2rem; margin-top: 2rem; }}
-            .stat-box {{ background: #18181b; padding: 1.5rem; border-radius: 10px; text-align: center; min-width: 150px; border: 1px solid #333; }}
-            .stat-value {{ font-size: 2.5rem; font-weight: bold; color: #fff; }}
-            .stat-label {{ color: #888; margin-top: 0.5rem; }}
-            a {{ color: #DC2626; text-decoration: none; margin-top: 2rem; }}
-            a:hover {{ text-decoration: underline; }}
+            body { font-family: sans-serif; background-color: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+            h1 { color: #DC2626; font-size: 3rem; margin-bottom: 1rem; }
         </style>
     </head>
     <body>
         <h1>ZIZO Music API</h1>
         <p>Backend Server Status: <strong>Online</strong></p>
-        
-        <div class="stats">
-            <div class="stat-box">
-                <div class="stat-value">{songs_count}</div>
-                <div class="stat-label">Cached Songs</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-value">{mappings_count}</div>
-                <div class="stat-label">Song Mappings</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-value">{profiles_count}</div>
-                <div class="stat-label">Active Profiles</div>
-            </div>
-        </div>
-        
-        <a href="/docs">View API Documentation</a>
     </body>
     </html>
     """

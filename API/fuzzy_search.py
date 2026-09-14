@@ -1,4 +1,5 @@
 from rapidfuzz import fuzz
+from thumbs import pick_thumbnail
 
 VARIANT_TERMS = (
     "remix", "cover", "live", "acoustic", "sped up", "slowed",
@@ -53,12 +54,11 @@ def primary_artist(track):
 
 
 def build_suggestion(track, score):
-    thumbnails = track.get("thumbnails") or []
     return {
         "id": track.get("videoId", ""),
         "title": track.get("title", ""),
         "artist": primary_artist(track),
-        "thumbnail": thumbnails[-1].get("url", "") if thumbnails else "",
+        "thumbnail": pick_thumbnail(track.get("thumbnails") or []),
         "duration": track.get("duration") or "",
         "score": round(score, 3),
     }

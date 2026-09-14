@@ -3,6 +3,7 @@ import re
 import shutil
 import threading
 import yt_dlp
+from ffmpeg_bin import ffmpeg_path
 
 _state = threading.Condition()
 _user_waiters = 0
@@ -38,7 +39,8 @@ def _acquire(priority):
     with _state:
         if priority:
             _user_waiters += 1
-        while _busy or (not priority and _user_waiters > 0):
+            return
+        while _busy or _user_waiters > 0:
             _state.wait()
         _busy = True
 
@@ -46,14 +48,15 @@ def _acquire(priority):
 def _release(priority):
     global _user_waiters, _busy
     with _state:
-        _busy = False
         if priority:
             _user_waiters -= 1
+        else:
+            _busy = False
         _state.notify_all()
 
 
 def _base_opts(output_dir, filename_template):
-    return {
+    opts = {
         "outtmpl": os.path.join(output_dir, filename_template),
         "noplaylist": True,
         "quiet": False,
@@ -72,6 +75,12 @@ def _base_opts(output_dir, filename_template):
             "Origin": "https://www.youtube.com",
         },
     }
+    modern = ffmpeg_path()
+    if modern:
+        opts["ffmpeg_location"] = modern
+    else:
+        opts["fixup"] = "never"
+    return opts
 
 
 _ATTEMPTS = [

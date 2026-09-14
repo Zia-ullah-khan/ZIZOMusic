@@ -7,6 +7,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ytmusicapi import YTMusic
+from thumbs import pick_thumbnail
+from security import require_valid_user_id
 
 PROFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profiles")
 # Set to an integer to cap saved history length, or None for unlimited
@@ -43,7 +45,7 @@ class RecommendationEngine:
         self._profile_lock = threading.Lock()
         os.makedirs(PROFILES_DIR, exist_ok=True)
         try:
-            os.chmod(PROFILES_DIR, 0o777)
+            os.chmod(PROFILES_DIR, 0o700)
         except OSError:
             pass
         print(f"Profiles directory: {PROFILES_DIR}")
@@ -82,7 +84,7 @@ class RecommendationEngine:
             artist = (track.get('artist') or "").strip()
 
         thumbnails = track.get('thumbnails') or track.get('thumbnail') or []
-        thumbnail = thumbnails[-1].get('url', "") if thumbnails else ""
+        thumbnail = pick_thumbnail(thumbnails)
 
         if not title or not artist or not thumbnail:
             return None
@@ -104,7 +106,12 @@ class RecommendationEngine:
     # ------------------------------------------------------------------
 
     def _get_profile_path(self, user_id):
-        return os.path.join(PROFILES_DIR, f"{user_id}.json")
+        require_valid_user_id(user_id)
+        root = os.path.abspath(PROFILES_DIR)
+        path = os.path.abspath(os.path.join(root, f"{user_id}.json"))
+        if os.path.commonpath([path, root]) != root:
+            raise ValueError("Resolved path escapes profiles directory")
+        return path
 
     @staticmethod
     def _empty_profile():
@@ -149,7 +156,7 @@ class RecommendationEngine:
                     raise
 
                 try:
-                    os.chmod(path, 0o666)
+                    os.chmod(path, 0o600)
                 except OSError:
                     pass
             except OSError as e:
@@ -163,6 +170,11 @@ class RecommendationEngine:
         print(f"Updating profile for user: {user_id} (source: {source})")
         if not metadata or not user_id:
             print("Missing metadata or user_id")
+            return
+        try:
+            require_valid_user_id(user_id)
+        except ValueError:
+            print("Rejected invalid user_id")
             return
 
         title = metadata.get('title')
@@ -393,7 +405,10 @@ class RecommendationEngine:
         return excluded
 
     def get_recommendations(self, user_id, limit=50):
-        profile = self._load_profile(user_id) if user_id else self._empty_profile()
+        try:
+            profile = self._load_profile(user_id) if user_id else self._empty_profile()
+        except ValueError:
+            profile = self._empty_profile()
 
         excluded = self._build_excluded(profile)
         functional_session = self._is_functional_session(profile)

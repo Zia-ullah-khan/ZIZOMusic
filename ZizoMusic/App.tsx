@@ -27,12 +27,14 @@ import TrackPlayer, {
   useTrackPlayerEvents,
   AppKilledPlaybackBehavior
 } from 'react-native-track-player';
+import { API_URL, apiFetch, ensureSession, safeImageUrl } from './api';
 
 interface Recommendation {
   title: string;
   artist: string;
   thumbnail: string;
   query: string;
+  videoId?: string;
 }
 
 interface SongInfo {
@@ -66,10 +68,7 @@ const ALBUM_PRESETS = [
   "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300", // Preset 4: Green matrix
 ];
 
-const PRODUCTION_API_URL = "https://api.zizomusic.com";
-const DEV_API_URL = Platform.OS === "android" ? "http://10.0.2.2:8000" : "http://127.0.0.1:8000";
-const API_URL = __DEV__ ? DEV_API_URL : PRODUCTION_API_URL;
-const UPCOMING_QUEUE_SIZE = 12;
+const UPCOMING_QUEUE_SIZE = 2;
 const SUGGESTION_DEBOUNCE_MS = 220;
 const SUGGESTION_MIN_CHARS = 2;
 
@@ -127,37 +126,24 @@ const formatTime = (seconds: number) => {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 };
 
-const streamFallbackUrl = (songName: string, userID: string) => {
-  let url = `${API_URL}/stream/${encodeURIComponent(songName)}`;
-  if (userID) {
-    url += `?user_id=${userID}`;
-  }
-  return url;
-};
-
 interface ResolvedStream {
   url: string;
   type?: TrackType;
 }
 
-const resolveStream = async (songName: string, userID: string): Promise<ResolvedStream> => {
-  const userParam = userID ? `?user_id=${userID}` : "";
-  const fallback: ResolvedStream = { url: streamFallbackUrl(songName, userID) };
-
-  try {
-    const res = await fetch(`${API_URL}/play/${encodeURIComponent(songName)}${userParam}`);
-    if (!res.ok) {
-      return fallback;
-    }
-    const data = await res.json();
-    return {
-      url: `${API_URL}${data.url}`,
-      type: data.type === "hls" ? TrackType.HLS : undefined,
-    };
-  } catch (e) {
-    console.log("Stream resolve failed, using direct stream", e);
-    return fallback;
+const resolveStream = async (songName: string): Promise<ResolvedStream> => {
+  const res = await apiFetch(`/play/${encodeURIComponent(songName)}`);
+  if (!res.ok) {
+    throw new Error(`Play resolve failed: ${res.status}`);
   }
+  const data = await res.json();
+  if (typeof data.url !== "string" || (!data.url.startsWith("/hls/") && !data.url.startsWith("/stream/"))) {
+    throw new Error("Invalid stream URL");
+  }
+  return {
+    url: `${API_URL}${data.url}`,
+    type: data.type === "hls" ? TrackType.HLS : undefined,
+  };
 };
 
 const toPlayerTrack = (songName: string, info: SongInfo | null, stream: ResolvedStream): Track => ({
@@ -173,10 +159,10 @@ const toPlayerTrack = (songName: string, info: SongInfo | null, stream: Resolved
 const setupPlayer = async () => {
   try {
     await TrackPlayer.setupPlayer({
-      minBuffer: 60,
-      maxBuffer: 300,
+      minBuffer: 15,
+      maxBuffer: 90,
       playBuffer: 1.5,
-      backBuffer: 30,
+      backBuffer: 10,
       maxCacheSize: 256 * 1024,
     });
     await TrackPlayer.updateOptions({
@@ -274,12 +260,12 @@ export default function App() {
       setIsPlayerReady(true);
 
       try {
-        const storedUserID = await AsyncStorage.getItem('userID');
         const storedRecentSongs = await AsyncStorage.getItem('recentSongs');
         const storedLiked = await AsyncStorage.getItem('likedTracks');
-
-        if (storedUserID) {
-          setUserID(storedUserID);
+        await AsyncStorage.removeItem('userID');
+        const sessionUser = await ensureSession();
+        if (sessionUser) {
+          setUserID(sessionUser);
         }
 
         if (storedRecentSongs) {
@@ -305,30 +291,23 @@ export default function App() {
           }
         }
 
-        fetchRecommendations(storedUserID || "");
+        fetchRecommendations();
       } catch (e) {
         console.error("Failed to load storage", e);
-        fetchRecommendations("");
+        fetchRecommendations();
       }
     };
     init();
   }, []);
 
-  const fetchRecommendations = async (currentUserID: string) => {
+  const fetchRecommendations = async () => {
     try {
-      let url = `${API_URL}/recommend`;
-      if (currentUserID) {
-        url += `?user_id=${currentUserID}`;
-      }
-
-      const res = await fetch(url);
+      const res = await apiFetch("/recommend?limit=12");
       if (res.ok) {
         const data = await res.json();
         setRecommendations(data.recommendations || []);
-
-        if (data.user_id && data.user_id !== currentUserID) {
-            setUserID(data.user_id);
-            AsyncStorage.setItem('userID', data.user_id).catch(err => console.error("Failed to save userID", err));
+        if (data.user_id) {
+          setUserID(data.user_id);
         }
       }
     } catch (e) {
@@ -346,7 +325,6 @@ export default function App() {
       AsyncStorage.setItem('recentSongs', JSON.stringify(newHistory)).catch(err => console.error("Failed to save history", err));
       return newHistory;
     });
-    fetchRecommendations(userIDRef.current);
   };
 
   const removeRecentSong = (songName: string) => {
@@ -377,7 +355,7 @@ export default function App() {
       id: Date.now().toString(),
       title: newAlbumTitle.trim(),
       year: newAlbumYear.trim() || new Date().getFullYear().toString(),
-      thumbnail: newAlbumCover.trim(),
+      thumbnail: safeImageUrl(newAlbumCover.trim()) || ALBUM_PRESETS[0],
       songs: [],
     };
     const updatedAlbums = [newAlbum, ...albums];
@@ -398,7 +376,7 @@ export default function App() {
 
   const fetchSongSuggestions = async (text: string) => {
     try {
-      const res = await fetch(`${API_URL}/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
+      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
       if (res.ok) {
         const data = await res.json();
         setSongSuggestions(data.suggestions || []);
@@ -476,15 +454,23 @@ export default function App() {
       .filter(rec => rec.query && rec.query !== excludeId && !queuedIds.has(rec.query))
       .slice(0, UPCOMING_QUEUE_SIZE);
 
-    const upcoming = await Promise.all(
-      upcomingRecs.map(async rec => {
-        const stream = await resolveStream(rec.query, userIDRef.current);
-        return toPlayerTrack(rec.query, rec, stream);
-      })
-    );
+    for (const rec of upcomingRecs) {
+      try {
+        const stream = await resolveStream(rec.query);
+        await TrackPlayer.add(toPlayerTrack(rec.query, rec, stream));
+      } catch (e) {
+        console.error("Failed to enqueue upcoming", e);
+      }
+    }
 
-    if (upcoming.length > 0) {
-      await TrackPlayer.add(upcoming);
+    const extras = recommendationsRef.current
+      .filter(rec => rec.query && rec.query !== excludeId && !queuedIds.has(rec.query) && rec.videoId)
+      .slice(UPCOMING_QUEUE_SIZE, UPCOMING_QUEUE_SIZE + 4);
+    for (const rec of extras) {
+      apiFetch("/cache/prefetch", {
+        method: "POST",
+        body: JSON.stringify({ video_id: rec.videoId, query: rec.query }),
+      }).catch(() => {});
     }
   };
 
@@ -495,7 +481,7 @@ export default function App() {
       return;
     }
     const remaining = queue.length - index - 1;
-    if (remaining >= 4) {
+    if (remaining >= 2) {
       return;
     }
     const active = queue[index];
@@ -532,9 +518,8 @@ export default function App() {
       return;
     }
     prefetchedIdsRef.current.add(s.id);
-    fetch(`${API_URL}/cache/prefetch`, {
+    apiFetch("/cache/prefetch", {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ video_id: s.id, query: suggestionPlayKey(s) }),
     }).catch(() => {
       prefetchedIdsRef.current.delete(s.id);
@@ -544,7 +529,7 @@ export default function App() {
   const fetchSuggestions = async (text: string) => {
     const requestId = ++suggestionRequestIdRef.current;
     try {
-      const res = await fetch(`${API_URL}/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
+      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
       if (!res.ok || requestId !== suggestionRequestIdRef.current) {
         return;
       }
@@ -620,7 +605,7 @@ export default function App() {
 
     if (typeof songInput === 'string') {
         songName = songInput;
-        infoPromise = fetch(`${API_URL}/info/${encodeURIComponent(songName)}`)
+        infoPromise = apiFetch(`/info/${encodeURIComponent(songName)}`)
           .then(res => (res.ok ? res.json() : null))
           .catch(() => null);
     } else {
@@ -641,7 +626,7 @@ export default function App() {
     addToHistory(songName);
 
     try {
-      const stream = await resolveStream(songName, userIDRef.current);
+      const stream = await resolveStream(songName);
       await TrackPlayer.reset();
       await TrackPlayer.add(toPlayerTrack(songName, songInfo, stream));
       await TrackPlayer.play();
@@ -667,7 +652,7 @@ export default function App() {
   };
 
   useTrackPlayerEvents(
-    [Event.PlaybackActiveTrackChanged, Event.PlaybackQueueEnded, Event.PlaybackProgressUpdated],
+    [Event.PlaybackActiveTrackChanged, Event.PlaybackQueueEnded, Event.PlaybackProgressUpdated, Event.PlaybackError],
     async (event) => {
       if (event.type === Event.PlaybackActiveTrackChanged) {
         const track = event.track;
@@ -697,6 +682,41 @@ export default function App() {
         const nextRec = recommendationsRef.current[0];
         if (nextRec) {
           playSong(nextRec);
+        }
+      }
+
+      if (event.type === Event.PlaybackError) {
+        const active = await TrackPlayer.getActiveTrack();
+        const progressNow = await TrackPlayer.getProgress();
+        const songName = String(active?.id || "");
+        if (!songName) {
+          setStatus("Error playing");
+          return;
+        }
+        try {
+          const stream = await resolveStream(songName);
+          const index = await TrackPlayer.getActiveTrackIndex();
+          if (index == null) {
+            return;
+          }
+          await TrackPlayer.remove(index);
+          await TrackPlayer.add(
+            toPlayerTrack(songName, {
+              title: String(active?.title || songName),
+              artist: String(active?.artist || "ZIZO Music"),
+              thumbnail: typeof active?.artwork === "string" ? active.artwork : "",
+            }, stream),
+            index
+          );
+          await TrackPlayer.skip(index);
+          if (progressNow.position > 2) {
+            await TrackPlayer.seekTo(progressNow.position);
+          }
+          await TrackPlayer.play();
+          setStatus("Playing");
+        } catch (e) {
+          console.error("Playback recover failed", e);
+          setStatus("Error playing");
         }
       }
     }

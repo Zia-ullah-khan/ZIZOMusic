@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import Hls from "hls.js";
-import { API_URL } from "@/lib/api";
+import { API_URL, apiFetch, ensureSession, mediaUrl, safeImageUrl } from "@/lib/api";
 
 interface Recommendation {
   title: string;
@@ -35,11 +36,48 @@ interface Album {
 }
 
 const ALBUM_PRESETS = [
-  "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300", // Preset 1
-  "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300", // Preset 2
-  "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300", // Preset 3
-  "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300", // Preset 4
+  "/images/aetheris.webp",
+  "/images/cyberpunk_essentials.webp",
+  "/images/neo_flora.webp",
 ];
+
+function Cover({
+  src,
+  alt,
+  width,
+  height,
+  className,
+  priority = false,
+}: {
+  src?: string;
+  alt: string;
+  width: number;
+  height: number;
+  className?: string;
+  priority?: boolean;
+}) {
+  if (!src) {
+    return <div className={className} />;
+  }
+
+  if (src.startsWith("/")) {
+    return (
+      <Image
+        src={src}
+        alt={alt}
+        width={width}
+        height={height}
+        className={className}
+        priority={priority}
+      />
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={alt} width={width} height={height} className={className} loading={priority ? "eager" : "lazy"} />
+  );
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"home" | "search" | "library">("home");
@@ -54,7 +92,7 @@ export default function Home() {
   const [showCreateAlbumModal, setShowCreateAlbumModal] = useState(false);
   const [newAlbumTitle, setNewAlbumTitle] = useState("");
   const [newAlbumYear, setNewAlbumYear] = useState("");
-  const [newAlbumCover, setNewAlbumCover] = useState("https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300");
+  const [newAlbumCover, setNewAlbumCover] = useState(ALBUM_PRESETS[0]);
   const [modalError, setModalError] = useState("");
   const [status, setStatus] = useState("");
   const [recentSongs, setRecentSongs] = useState<string[]>([]);
@@ -73,6 +111,8 @@ export default function Home() {
   const hlsRef = useRef<Hls | null>(null);
   const historyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suggestionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const recommendationsRef = useRef<Recommendation[]>([]);
+  recommendationsRef.current = recommendations;
 
   const destroyHls = () => {
     if (hlsRef.current) {
@@ -93,44 +133,60 @@ export default function Home() {
     if (isHls && Hls.isSupported()) {
       const instance = new Hls({
         enableWorker: true,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 300,
-        maxBufferSize: 60 * 1000 * 1000,
+        startLevel: 0,
+        abrEwmaDefaultEstimate: 400000,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 90,
+        maxBufferSize: 8 * 1000 * 1000,
+        backBufferLength: 10,
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = true;
+        },
       });
       hlsRef.current = instance;
+      audio.crossOrigin = "use-credentials";
       instance.loadSource(url);
       instance.attachMedia(audio);
       return new Promise<void>((resolve, reject) => {
+        let started = false;
         instance.on(Hls.Events.MANIFEST_PARSED, () => {
-          audio.play().then(() => resolve()).catch(reject);
+          audio.play().then(() => {
+            started = true;
+            resolve();
+          }).catch(reject);
         });
         instance.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal) {
+          if (!data.fatal) {
+            return;
+          }
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            instance.startLoad();
+            return;
+          }
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            instance.recoverMediaError();
+            return;
+          }
+          if (!started) {
             reject(data);
           }
         });
       });
     }
 
+    audio.crossOrigin = "use-credentials";
     audio.src = url;
     return audio.play().then(() => undefined);
   };
 
-  const fetchRecommendations = async (currentUserID: string) => {
+  const fetchRecommendations = async () => {
     try {
-      let url = `${API_URL}/recommend`;
-      if (currentUserID) {
-        url += `?user_id=${currentUserID}`;
-      }
-      
-      const res = await fetch(url);
+      const res = await apiFetch("/recommend?limit=12");
       if (res.ok) {
         const data = await res.json();
         setRecommendations(data.recommendations || []);
-        
-        if (data.user_id && data.user_id !== currentUserID) {
-            setUserID(data.user_id);
-            localStorage.setItem("userID", data.user_id);
+        if (data.user_id) {
+          setUserID(data.user_id);
         }
       }
     } catch (e) {
@@ -143,10 +199,16 @@ export default function Home() {
     if (saved) {
       setRecentSongs(JSON.parse(saved));
     }
-    
-    const savedUserID = localStorage.getItem("userID") || "";
-    setUserID(savedUserID);
-    fetchRecommendations(savedUserID);
+
+    localStorage.removeItem("userID");
+    ensureSession()
+      .then((id) => {
+        if (id) {
+          setUserID(id);
+        }
+        return fetchRecommendations();
+      })
+      .catch((e) => console.error("Failed to start session", e));
 
     const savedLiked = localStorage.getItem("likedTracks");
     if (savedLiked) {
@@ -157,6 +219,16 @@ export default function Home() {
     if (savedAlbums) {
       setAlbums(JSON.parse(savedAlbums));
     }
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+
+    const resume = () => {
+      audioRef.current?.play().catch(() => {});
+    };
+    window.addEventListener("online", resume);
+    return () => window.removeEventListener("online", resume);
   }, []);
 
   const addToHistory = (songName: string) => {
@@ -165,7 +237,48 @@ export default function Home() {
       localStorage.setItem("recentSongs", JSON.stringify(newHistory));
       return newHistory;
     });
-    fetchRecommendations(userID);
+  };
+
+  const prefetchNextBurst = async (next: Recommendation) => {
+    try {
+      const playRes = await apiFetch(`/play/${encodeURIComponent(next.query)}`);
+      if (!playRes.ok) {
+        return;
+      }
+      const playData = await playRes.json();
+      const masterUrl = mediaUrl(playData.url);
+      if (!masterUrl) {
+        return;
+      }
+      if (playData.type !== "hls") {
+        return;
+      }
+      const masterRes = await fetch(masterUrl, { credentials: "include" });
+      if (!masterRes.ok) {
+        return;
+      }
+      const masterText = await masterRes.text();
+      const playlistRel = masterText.split("\n").map(line => line.trim()).find(line => line && !line.startsWith("#"));
+      if (!playlistRel) {
+        return;
+      }
+      const playlistUrl = new URL(playlistRel, masterUrl).toString();
+      const playlistRes = await fetch(playlistUrl, { credentials: "include" });
+      if (!playlistRes.ok) {
+        return;
+      }
+      const playlistText = await playlistRes.text();
+      const segments = playlistText
+        .split("\n")
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith("#"))
+        .slice(0, 3);
+      for (const segment of segments) {
+        await fetch(new URL(segment, playlistUrl).toString(), { credentials: "include" });
+      }
+    } catch (e) {
+      console.log("Next-track prefetch skipped", e);
+    }
   };
 
   const handleCreateAlbum = () => {
@@ -176,7 +289,7 @@ export default function Home() {
     const newAlbum: Album = {
       title: newAlbumTitle.trim(),
       year: newAlbumYear.trim() || new Date().getFullYear().toString(),
-      thumbnail: newAlbumCover.trim(),
+      thumbnail: safeImageUrl(newAlbumCover.trim()) || ALBUM_PRESETS[0],
     };
     const updatedAlbums = [newAlbum, ...albums];
     setAlbums(updatedAlbums);
@@ -197,7 +310,7 @@ export default function Home() {
 
     if (typeof songInput === "string") {
         songName = songInput;
-        infoPromise = fetch(`${API_URL}/info/${encodeURIComponent(songName)}`)
+        infoPromise = apiFetch(`/info/${encodeURIComponent(songName)}`)
           .then(res => (res.ok ? res.json() : null))
           .catch(() => null);
     } else {
@@ -205,7 +318,7 @@ export default function Home() {
         songInfo = {
             title: songInput.title,
             artist: songInput.artist,
-            thumbnail: songInput.thumbnail
+            thumbnail: safeImageUrl(songInput.thumbnail)
         };
     }
 
@@ -229,15 +342,14 @@ export default function Home() {
         }, 60000);
     }
 
-    const userParam = userID ? `?user_id=${userID}` : "";
-    let songUrl = `${API_URL}/stream/${encodeURIComponent(songName)}${userParam}`;
+    let songUrl = "";
     let isHls = false;
 
     try {
-      const playRes = await fetch(`${API_URL}/play/${encodeURIComponent(songName)}${userParam}`);
+      const playRes = await apiFetch(`/play/${encodeURIComponent(songName)}`);
       if (playRes.ok) {
         const playData = await playRes.json();
-        songUrl = `${API_URL}${playData.url}`;
+        songUrl = mediaUrl(playData.url);
         isHls = playData.type === "hls";
       }
     } catch (e) {
@@ -256,11 +368,20 @@ export default function Home() {
       }
     };
 
+    if (!songUrl) {
+      setStatus("Error playing");
+      return;
+    }
+
     try {
       await attachStream(songUrl, isHls);
       setStatus("Playing");
       setIsPlaying(true);
       applyMetadata(songInfo);
+      const next = recommendationsRef.current.find(rec => rec.query && rec.query !== songName);
+      if (next) {
+        prefetchNextBurst(next);
+      }
     } catch (e) {
       console.error(e);
       setStatus("Error playing");
@@ -394,7 +515,7 @@ export default function Home() {
 
   const fetchSuggestions = async (text: string) => {
     try {
-      const res = await fetch(`${API_URL}/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
+      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
       if (res.ok) {
         const data = await res.json();
         setSuggestions(data.suggestions || []);
@@ -434,19 +555,19 @@ export default function Home() {
       return recommendations.slice(0, 10);
     }
     return [
-      { title: "Astral Drift", artist: "Hyperion", query: "Astral Drift Hyperion", thumbnail: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150" },
-      { title: "Virtual Horizon", artist: "Kozmos", query: "Virtual Horizon Kozmos", thumbnail: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=150" },
-      { title: "Synthesized Mind", artist: "Vector Unit", query: "Synthesized Mind Vector Unit", thumbnail: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=150" },
-      { title: "Retro Future", artist: "Daft Punk", query: "Retro Future Daft Punk", thumbnail: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150" },
-      { title: "Neon Wanderer", artist: "Stellar", query: "Neon Wanderer Stellar", thumbnail: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150" },
+      { title: "Astral Drift", artist: "Hyperion", query: "Astral Drift Hyperion", thumbnail: "/images/aetheris.webp" },
+      { title: "Virtual Horizon", artist: "Kozmos", query: "Virtual Horizon Kozmos", thumbnail: "/images/cyberpunk_essentials.webp" },
+      { title: "Synthesized Mind", artist: "Vector Unit", query: "Synthesized Mind Vector Unit", thumbnail: "/images/neo_flora.webp" },
+      { title: "Retro Future", artist: "Daft Punk", query: "Retro Future Daft Punk", thumbnail: "/images/aetheris.webp" },
+      { title: "Neon Wanderer", artist: "Stellar", query: "Neon Wanderer Stellar", thumbnail: "/images/cyberpunk_essentials.webp" },
     ];
   };
 
   const getArtistDetails = () => {
     const defaultArtist = "Aetheris";
-    const defaultArt = "/images/aetheris.jpg";
+    const defaultArt = "/images/aetheris.webp";
     const currentArtist = currentSong && currentSong.artist !== "ZIZO Music" ? currentSong.artist : defaultArtist;
-    const currentArt = currentSong && currentSong.artist !== "ZIZO Music" ? currentSong.thumbnail : defaultArt;
+    const currentArt = currentSong && currentSong.artist !== "ZIZO Music" ? safeImageUrl(currentSong.thumbnail) || defaultArt : defaultArt;
 
     const popularTracks = recommendations.slice(0, 3).map((rec, idx) => ({
       id: `0${idx + 1}`,
@@ -459,9 +580,9 @@ export default function Home() {
 
     if (popularTracks.length === 0) {
       popularTracks.push(
-        { id: "01", title: "Lost In Translation", artist: currentArtist, plays: "14.2M", thumbnail: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150", query: `Lost In Translation ${currentArtist}` },
-        { id: "02", title: "Static Dreams", artist: currentArtist, plays: "8.9M", thumbnail: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=150", query: `Static Dreams ${currentArtist}` },
-        { id: "03", title: "Subzero", artist: currentArtist, plays: "5.1M", thumbnail: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=150", query: `Subzero ${currentArtist}` }
+        { id: "01", title: "Lost In Translation", artist: currentArtist, plays: "14.2M", thumbnail: "/images/aetheris.webp", query: `Lost In Translation ${currentArtist}` },
+        { id: "02", title: "Static Dreams", artist: currentArtist, plays: "8.9M", thumbnail: "/images/cyberpunk_essentials.webp", query: `Static Dreams ${currentArtist}` },
+        { id: "03", title: "Subzero", artist: currentArtist, plays: "5.1M", thumbnail: "/images/neo_flora.webp", query: `Subzero ${currentArtist}` }
       );
     }
 
@@ -513,7 +634,7 @@ export default function Home() {
       {/* LEFT SIDEBAR (Desktop) */}
       <aside className="hidden md:flex flex-col w-64 bg-[#0a0a0d] border-r border-white/5 p-6 shrink-0">
         <div className="flex items-center gap-3 mb-8">
-          <img src="/logo.png" alt="ZIZO Music Logo" className="w-8 h-8 rounded" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+          <Cover src="/logo.webp" alt="ZIZO Music Logo" width={32} height={32} className="w-8 h-8 rounded" priority />
           <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-teal to-sky-blue bg-clip-text text-transparent">ZIZO Music</span>
         </div>
 
@@ -596,7 +717,7 @@ export default function Home() {
                         className="flex items-center gap-4 p-3 rounded-xl bg-[#101012] border border-white/3 hover:bg-white/5 transition-colors cursor-pointer group"
                       >
                         <span className="w-8 text-center text-sm text-gray-500 font-bold group-hover:text-white transition-colors">{track.id}</span>
-                        <img src={track.thumbnail} alt={track.title} className="w-11 h-11 object-cover rounded-lg bg-zinc-800" />
+                        <Cover src={safeImageUrl(track.thumbnail)} alt={track.title} width={44} height={44} className="w-11 h-11 object-cover rounded-lg bg-zinc-800" />
                         <div className="flex-1 min-w-0">
                           <h4 className="text-sm font-semibold truncate text-white">{track.title}</h4>
                           <span className="text-xs text-gray-500">{track.plays} plays</span>
@@ -652,7 +773,7 @@ export default function Home() {
                           onClick={() => selectGenre(album.title)}
                           className="w-[140px] md:w-[160px] shrink-0 p-3 rounded-2xl bg-[#101012] border border-white/3 hover:bg-white/5 transition-all cursor-pointer group"
                         >
-                          <img src={album.thumbnail} alt={album.title} className="w-full aspect-square object-cover rounded-xl bg-zinc-800 mb-3 shadow-md" />
+                          <Cover src={safeImageUrl(album.thumbnail)} alt={album.title} width={160} height={160} className="w-full aspect-square object-cover rounded-xl bg-zinc-800 mb-3 shadow-md" />
                           <h4 className="text-xs font-semibold truncate text-white group-hover:text-teal transition-colors">{album.title}</h4>
                           <span className="text-[10px] text-gray-500 mt-1 block">{album.year}</span>
                         </div>
@@ -693,7 +814,7 @@ export default function Home() {
                       onClick={() => playSuggestion(s)}
                       className="flex items-center gap-3 p-4 hover:bg-white/5 transition-colors cursor-pointer"
                     >
-                      <img src={s.thumbnail} alt={s.title} className="w-11 h-11 object-cover rounded-lg bg-zinc-850" />
+                      <Cover src={safeImageUrl(s.thumbnail)} alt={s.title} width={44} height={44} className="w-11 h-11 object-cover rounded-lg bg-zinc-850" />
                       <div className="flex-1 min-w-0">
                         <h4 className="text-sm font-semibold truncate text-white">{s.title}</h4>
                         <span className="text-xs text-gray-400">{s.artist}</span>
@@ -707,12 +828,12 @@ export default function Home() {
                   <h3 className="text-lg font-bold text-white">Browse all genres</h3>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                     {[
-                      { title: "Synthwave", class: "bg-gradient-synthwave", thumb: "/images/cyberpunk_essentials.jpg" },
-                      { title: "Lo-Fi Beats", class: "bg-gradient-lofi", thumb: "/images/neo_flora.jpg" },
-                      { title: "Techno & Club", class: "bg-gradient-techno", thumb: "/images/aetheris.jpg" },
-                      { title: "Indie Rock", class: "bg-gradient-indie", thumb: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150" },
-                      { title: "Hip-Hop", class: "bg-gradient-hiphop", thumb: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150" },
-                      { title: "Chill Ambient", class: "bg-gradient-ambient", thumb: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=150" },
+                      { title: "Synthwave", class: "bg-gradient-synthwave", thumb: "/images/cyberpunk_essentials.webp" },
+                      { title: "Lo-Fi Beats", class: "bg-gradient-lofi", thumb: "/images/neo_flora.webp" },
+                      { title: "Techno & Club", class: "bg-gradient-techno", thumb: "/images/aetheris.webp" },
+                      { title: "Indie Rock", class: "bg-gradient-indie", thumb: "/images/aetheris.webp" },
+                      { title: "Hip-Hop", class: "bg-gradient-hiphop", thumb: "/images/cyberpunk_essentials.webp" },
+                      { title: "Chill Ambient", class: "bg-gradient-ambient", thumb: "/images/neo_flora.webp" },
                     ].map((genre, idx) => (
                       <div
                         key={idx}
@@ -721,7 +842,7 @@ export default function Home() {
                       >
                         <span className="text-base font-bold text-white tracking-tight">{genre.title}</span>
                         <div className="absolute -bottom-4 -right-4 w-16 h-16 shadow-lg shadow-black/40 rotate-[25deg]">
-                          <img src={genre.thumb} alt={genre.title} className="w-full h-full object-cover rounded-md" />
+                          <Cover src={genre.thumb} alt={genre.title} width={64} height={64} className="w-full h-full object-cover rounded-md" />
                         </div>
                       </div>
                     ))}
@@ -735,9 +856,11 @@ export default function Home() {
           {activeTab === "library" && (
             <div className="p-6 md:p-8 max-w-5xl w-full mx-auto flex flex-col gap-6">
               <div className="flex flex-col sm:flex-row items-center sm:items-end gap-6 pb-6 border-b border-white/5">
-                <img
-                  src={currentSong?.thumbnail || "/images/cyberpunk_essentials.jpg"}
+                <Cover
+                  src={safeImageUrl(currentSong?.thumbnail) || "/images/cyberpunk_essentials.webp"}
                   alt="Cyberpunk Essentials Cover"
+                  width={192}
+                  height={192}
                   className="w-44 h-44 md:w-48 md:h-48 object-cover rounded-2xl shadow-xl shadow-black/40 bg-zinc-800 shrink-0"
                 />
                 <div className="flex flex-col text-center sm:text-left gap-2 min-w-0">
@@ -772,7 +895,7 @@ export default function Home() {
                     className="flex items-center gap-4 py-3 hover:bg-white/5 rounded-xl px-2 transition-colors cursor-pointer group"
                   >
                     <span className="w-8 text-center text-xs text-gray-500 font-bold">{String(index + 1).padStart(2, "0")}</span>
-                    <img src={track.thumbnail} alt={track.title} className="w-11 h-11 object-cover rounded-lg bg-zinc-800 shrink-0" />
+                    <Cover src={safeImageUrl(track.thumbnail)} alt={track.title} width={44} height={44} className="w-11 h-11 object-cover rounded-lg bg-zinc-800 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <h4 className="text-sm font-semibold truncate text-white group-hover:text-teal transition-colors">{track.title}</h4>
                       <span className="text-xs text-gray-500 truncate block mt-0.5">{track.artist}</span>
@@ -796,7 +919,7 @@ export default function Home() {
             onClick={() => setShowFullPlayer(true)} 
             className="flex items-center gap-3 w-1/4 min-w-0 cursor-pointer group"
           >
-            <img src={currentSong.thumbnail} alt={currentSong.title} className="w-11 h-11 object-cover rounded-lg bg-zinc-800 shadow" />
+            <Cover src={safeImageUrl(currentSong.thumbnail)} alt={currentSong.title} width={44} height={44} className="w-11 h-11 object-cover rounded-lg bg-zinc-800 shadow" />
             <div className="hidden sm:flex flex-col min-w-0">
               <h4 className="text-xs font-semibold text-white truncate group-hover:underline">{currentSong.title}</h4>
               <span className="text-[10px] text-teal truncate mt-0.5">{currentSong.artist}</span>
@@ -915,9 +1038,11 @@ export default function Home() {
 
             {/* Glowing Album Cover */}
             <div className="flex-1 flex items-center justify-center py-4">
-              <img
-                src={currentSong.thumbnail}
+              <Cover
+                src={safeImageUrl(currentSong.thumbnail)}
                 alt={currentSong.title}
+                width={280}
+                height={280}
                 className="w-[280px] h-[280px] object-cover rounded-2xl shadow-glow-cyan bg-zinc-800"
               />
             </div>
@@ -1036,7 +1161,7 @@ export default function Home() {
                     onClick={() => setNewAlbumCover(preset)}
                     className={`shrink-0 w-12 h-12 rounded-lg overflow-hidden border-2 transition-all ${newAlbumCover === preset ? "border-teal scale-95" : "border-transparent"}`}
                   >
-                    <img src={preset} alt={`Preset ${idx + 1}`} className="w-full h-full object-cover" />
+                    <Cover src={preset} alt={`Preset ${idx + 1}`} width={48} height={48} className="w-full h-full object-cover" />
                   </button>
                 ))}
               </div>
