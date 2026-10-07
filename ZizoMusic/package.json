@@ -17,6 +17,7 @@
     "react-native": "0.82.1",
     "react-native-carplay": "^2.4.1-beta.0",
     "react-native-safe-area-context": "^5.5.2",
+    "react-native-svg": "^15.15.5",
     "react-native-track-player": "^4.1.2"
   },
   "devDependencies": {

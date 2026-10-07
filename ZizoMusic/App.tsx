@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from "react";
 import {
   StyleSheet,
   Text,
@@ -11,10 +11,10 @@ import {
   GestureResponderEvent,
   Modal,
   Dimensions,
-  Platform,
-} from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+  ActivityIndicator,
+} from "react-native";
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import TrackPlayer, {
   Capability,
   Event,
@@ -25,11 +25,36 @@ import TrackPlayer, {
   usePlaybackState,
   useProgress,
   useTrackPlayerEvents,
-  AppKilledPlaybackBehavior
-} from 'react-native-track-player';
-import { API_URL, apiFetch, ensureSession, safeImageUrl } from './api';
+  AppKilledPlaybackBehavior,
+} from "react-native-track-player";
+import { API_URL, apiFetch, ensureSession, safeImageUrl } from "./api";
+import {
+  PlayIcon,
+  PauseIcon,
+  SkipNextIcon,
+  SkipPrevIcon,
+  ShuffleIcon,
+  RepeatIcon,
+  HeartIcon,
+  HomeIcon,
+  SearchIcon,
+  LibraryIcon,
+  VolumeIcon,
+  QueueIcon,
+  CloseIcon,
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  TrashIcon,
+  PlusIcon,
+  ClockIcon,
+  DiscIcon,
+  MusicIcon,
+  RetryIcon,
+  LyricsIcon,
+} from "./components/Icons";
 
-interface Recommendation {
+interface LibraryTrack
+{
   title: string;
   artist: string;
   thumbnail: string;
@@ -37,14 +62,18 @@ interface Recommendation {
   videoId?: string;
 }
 
-interface SongInfo {
+type Recommendation = LibraryTrack;
+
+interface SongInfo
+{
   title: string;
   artist: string;
   thumbnail: string;
   duration?: number;
 }
 
-interface Suggestion {
+interface Suggestion
+{
   id: string;
   title: string;
   artist: string;
@@ -53,91 +82,272 @@ interface Suggestion {
   score: number;
 }
 
-interface Album {
+interface Album
+{
   id: string;
   title: string;
   year: string;
   thumbnail: string;
-  songs: Recommendation[];
+  songs: LibraryTrack[];
+}
+
+type TabId = "home" | "search" | "library";
+type LibraryView = "root" | "liked" | "history" | "album";
+type PlayStatus = "idle" | "finding" | "buffering" | "playing" | "paused" | "error";
+type LyricsStatus = "ok" | "instrumental" | "missing";
+
+interface LyricLine
+{
+  time: number;
+  text: string;
+}
+
+interface LyricsData
+{
+  status: LyricsStatus;
+  synced: boolean;
+  lines: LyricLine[];
 }
 
 const ALBUM_PRESETS = [
-  "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300", // Preset 1: Purple abstract
-  "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300", // Preset 2: Blue abstract
-  "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300", // Preset 3: Grid sunset
-  "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300", // Preset 4: Green matrix
+  "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300",
+  "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300",
+  "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300",
+  "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300",
 ];
+
+const GENRES = [
+  { title: "Synthwave", color: "#DEC5E3", thumb: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150" },
+  { title: "Lo-Fi Beats", color: "#81F7E5", thumb: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=150" },
+  { title: "Techno & Club", color: "#A9F8FB", thumb: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=150" },
+  { title: "Indie Rock", color: "#FF9F1C", thumb: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150" },
+  { title: "Hip-Hop", color: "#EC4899", thumb: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150" },
+  { title: "Chill Ambient", color: "#3B82F6", thumb: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=150" },
+];
+
+const STORAGE = {
+  recent: "recentTracks",
+  liked: "likedTracks",
+  albums: "createdAlbums",
+  prefs: "playbackPrefs",
+  session: "lastSession",
+  legacyRecent: "recentSongs",
+};
 
 const UPCOMING_QUEUE_SIZE = 2;
 const SUGGESTION_DEBOUNCE_MS = 220;
 const SUGGESTION_MIN_CHARS = 2;
 
 const COLORS = {
-  lavender: '#DEC5E3',
-  iceBlue: '#CDEDFD',
-  skyBlue: '#B6DCFE',
-  cyan: '#A9F8FB',
-  teal: '#81F7E5',
-  background: '#070708',
-  surface: '#121214',
-  surfaceLight: '#1e1e24',
-  textMuted: '#9ca3af',
-  textLight: '#ffffff',
-  textDark: '#000000',
-  cardGradients: {
-    synthwave: ['#DEC5E3', '#B6DCFE'],
-    lofi: ['#81F7E5', '#CDEDFD'],
-    techno: ['#A9F8FB', '#B6DCFE'],
-    indie: ['#FF9F1C', '#DEC5E3'],
-    hiphop: ['#EC4899', '#DEC5E3'],
-    ambient: ['#3B82F6', '#CDEDFD'],
-  }
+  lavender: "#DEC5E3",
+  cyan: "#A9F8FB",
+  teal: "#81F7E5",
+  background: "#070708",
+  surface: "#121214",
+  surfaceLight: "#1c1c1f",
+  textMuted: "#9ca3af",
+  textLight: "#ffffff",
+  textDark: "#000000",
 };
 
-const suggestionPlayKey = (s: Suggestion) => `${s.title} ${s.artist}`.trim();
-
-const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const renderHighlighted = (text: string, search: string, baseStyle: any, boldStyle: any) => {
-  const tokens = search.trim().split(/\s+/).filter(t => t.length > 1).map(escapeRegex);
-  if (tokens.length === 0) {
-    return <Text numberOfLines={1} style={baseStyle}>{text}</Text>;
+function normalizeTrackText(value: unknown): string
+{
+  if (typeof value === "string")
+  {
+    return value.trim();
   }
-  const splitter = new RegExp(`(${tokens.join('|')})`, 'ig');
-  const tester = new RegExp(`^(${tokens.join('|')})$`, 'i');
-  return (
-    <Text numberOfLines={1} style={baseStyle}>
-      {text.split(splitter).map((part, index) =>
-        tester.test(part)
-          ? <Text key={index} style={boldStyle}>{part}</Text>
-          : part
-      )}
-    </Text>
-  );
-};
+  if (typeof value === "number" || typeof value === "boolean")
+  {
+    return String(value).trim();
+  }
+  if (value && typeof value === "object" && !Array.isArray(value) && "title" in value)
+  {
+    return normalizeTrackText((value as { title?: unknown }).title);
+  }
+  return "";
+}
 
-const formatTime = (seconds: number) => {
-  if (!seconds || seconds < 0 || !isFinite(seconds)) {
+function trackKey(track: { title?: unknown; artist?: unknown; query?: unknown }): string
+{
+  const queryText = normalizeTrackText(track.query);
+  const fallbackText = [normalizeTrackText(track.title), normalizeTrackText(track.artist)].filter(Boolean).join(" ").trim();
+  return (queryText || fallbackText).trim();
+}
+
+function asTrack(input: unknown, queryOverride?: string): LibraryTrack
+{
+  if (typeof input === "string")
+  {
+    const text = input.trim();
+    return { title: text, artist: "", thumbnail: "", query: text };
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input))
+  {
+    return { title: "", artist: "", thumbnail: "", query: normalizeTrackText(queryOverride) };
+  }
+  const source = input as Record<string, unknown>;
+  if (source.title && typeof source.title === "object" && !Array.isArray(source.title))
+  {
+    return asTrack(source.title, queryOverride || normalizeTrackText(source.query));
+  }
+  const title = normalizeTrackText(source.title);
+  const artist = normalizeTrackText(source.artist);
+  const query = normalizeTrackText(queryOverride) || normalizeTrackText(source.query) || `${title} ${artist}`.trim();
+  return {
+    title,
+    artist,
+    thumbnail: safeImageUrl(typeof source.thumbnail === "string" ? source.thumbnail : ""),
+    query,
+  };
+}
+
+function coerceTrackList(raw: unknown): LibraryTrack[]
+{
+  if (!Array.isArray(raw))
+  {
+    return [];
+  }
+  return raw.map((item) => asTrack(item)).filter((item) => item.title || item.query);
+}
+
+function formatTime(seconds: number): string
+{
+  if (!seconds || seconds < 0 || !isFinite(seconds))
+  {
     return "0:00";
   }
   const total = Math.floor(seconds);
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
-};
+}
 
-interface ResolvedStream {
+function activeLyricIndex(lines: LyricLine[], time: number, synced: boolean): number
+{
+  if (!synced || lines.length === 0)
+  {
+    return -1;
+  }
+
+  let index = 0;
+  for (let i = 0; i < lines.length; i++)
+  {
+    if (lines[i].time <= time + 0.12)
+    {
+      index = i;
+    }
+    else
+    {
+      break;
+    }
+  }
+
+  return index;
+}
+
+function asLyricsData(input: unknown): LyricsData
+{
+  if (!input || typeof input !== "object")
+  {
+    return { status: "missing", synced: false, lines: [] };
+  }
+
+  const data = input as { status?: unknown; synced?: unknown; lines?: unknown };
+  const rawLines = Array.isArray(data.lines) ? data.lines : [];
+  const lines: LyricLine[] = [];
+
+  for (const entry of rawLines)
+  {
+    if (!entry || typeof entry !== "object")
+    {
+      continue;
+    }
+
+    const line = entry as { time?: unknown; text?: unknown };
+    const text = typeof line.text === "string" ? line.text.trim() : "";
+    if (!text)
+    {
+      continue;
+    }
+
+    const time = typeof line.time === "number" && Number.isFinite(line.time) ? line.time : 0;
+    lines.push({ time, text });
+  }
+
+  const status: LyricsStatus = data.status === "ok" || data.status === "instrumental"
+    ? data.status
+    : "missing";
+
+  return {
+    status: lines.length > 0 ? "ok" : (status === "instrumental" ? "instrumental" : "missing"),
+    synced: Boolean(data.synced) && lines.some((line) => line.time > 0),
+    lines,
+  };
+}
+
+function lyricsRequestPath(title: string, artist: string, query: string, duration: number): string
+{
+  const params = new URLSearchParams();
+  if (title)
+  {
+    params.set("title", title);
+  }
+  if (artist)
+  {
+    params.set("artist", artist);
+  }
+  if (query)
+  {
+    params.set("q", query);
+  }
+  if (duration > 0)
+  {
+    params.set("duration", String(Math.round(duration)));
+  }
+
+  return `/lyrics?${params.toString()}`;
+}
+
+function greetingForHour(hour: number): string
+{
+  if (hour < 12)
+  {
+    return "Good morning";
+  }
+  if (hour < 18)
+  {
+    return "Good afternoon";
+  }
+  return "Good evening";
+}
+
+function shuffleArray<T>(items: T[]): T[]
+{
+  const next = [...items];
+  for (let i = next.length - 1; i > 0; i--)
+  {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
+
+interface ResolvedStream
+{
   url: string;
   type?: TrackType;
 }
 
-const resolveStream = async (songName: string): Promise<ResolvedStream> => {
+const resolveStream = async (songName: string): Promise<ResolvedStream> =>
+{
   const res = await apiFetch(`/play/${encodeURIComponent(songName)}`);
-  if (!res.ok) {
+  if (!res.ok)
+  {
     throw new Error(`Play resolve failed: ${res.status}`);
   }
   const data = await res.json();
-  if (typeof data.url !== "string" || (!data.url.startsWith("/hls/") && !data.url.startsWith("/stream/"))) {
+  if (typeof data.url !== "string" || (!data.url.startsWith("/hls/") && !data.url.startsWith("/stream/")))
+  {
     throw new Error("Invalid stream URL");
   }
   return {
@@ -156,8 +366,10 @@ const toPlayerTrack = (songName: string, info: SongInfo | null, stream: Resolved
   duration: info?.duration && info.duration > 0 ? info.duration : undefined,
 });
 
-const setupPlayer = async () => {
-  try {
+const setupPlayer = async () =>
+{
+  try
+  {
     await TrackPlayer.setupPlayer({
       minBuffer: 15,
       maxBuffer: 90,
@@ -196,451 +408,552 @@ const setupPlayer = async () => {
       forwardJumpInterval: 10,
       backwardJumpInterval: 10,
     });
-  } catch (e) {
-    console.log("Player already setup", e);
+  }
+  catch (error)
+  {
+    console.log("Player already setup", error);
   }
 };
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'search' | 'library'>('home');
-  const [showFullPlayer, setShowFullPlayer] = useState(false);
-  const [volume, setVolume] = useState(1.0);
-  const [isShuffled, setIsShuffled] = useState(false);
-  const [likedTracks, setLikedTracks] = useState<Set<string>>(new Set());
+function Cover({ uri, style, size = 44 }: { uri?: string; style?: any; size?: number })
+{
+  const safe = safeImageUrl(uri);
+  if (!safe)
+  {
+    return (
+      <View style={[style, styles.coverFallback]}>
+        <MusicIcon size={size * 0.4} color={COLORS.textMuted} />
+      </View>
+    );
+  }
+  return <Image source={{ uri: safe }} style={style} />;
+}
 
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("");
-  const [recentSongs, setRecentSongs] = useState<string[]>([]);
-  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
-  const [currentSong, setCurrentSong] = useState<SongInfo | null>(null);
-  const [userID, setUserID] = useState<string>("");
+function EmptyState({
+  icon,
+  title,
+  body,
+  actionLabel,
+  onAction,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  actionLabel?: string;
+  onAction?: () => void;
+})
+{
+  return (
+    <View style={styles.emptyState}>
+      <View style={{ marginBottom: 10 }}>{icon}</View>
+      <Text style={styles.emptyTitle}>{title}</Text>
+      <Text style={styles.emptyBody}>{body}</Text>
+      {actionLabel && onAction ? (
+        <TouchableOpacity style={styles.primaryPill} onPress={onAction}>
+          <Text style={styles.primaryPillText}>{actionLabel}</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
+function SkeletonRow()
+{
+  return (
+    <View style={styles.skeletonRow}>
+      <View style={styles.skeletonArt} />
+      <View style={{ flex: 1, gap: 8 }}>
+        <View style={[styles.skeletonLine, { width: "70%" }]} />
+        <View style={[styles.skeletonLine, { width: "40%", height: 8 }]} />
+      </View>
+    </View>
+  );
+}
+
+export default function App()
+{
+  return (
+    <SafeAreaProvider>
+      <AppShell />
+    </SafeAreaProvider>
+  );
+}
+
+function AppShell()
+{
+  const [activeTab, setActiveTab] = useState<TabId>("home");
+  const [libraryView, setLibraryView] = useState<LibraryView>("root");
+  const [showFullPlayer, setShowFullPlayer] = useState(false);
+  const [showLyrics, setShowLyrics] = useState(false);
+  const [lyrics, setLyrics] = useState<LyricsData | null>(null);
+  const [lyricsLoading, setLyricsLoading] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [isShuffled, setIsShuffled] = useState(false);
   const [isLooping, setIsLooping] = useState(false);
   const [isAutoplay, setIsAutoplay] = useState(true);
+  const [likedTracks, setLikedTracks] = useState<LibraryTrack[]>([]);
+  const [query, setQuery] = useState("");
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [activeAlbum, setActiveAlbum] = useState<Album | null>(null);
+  const [showCreateAlbumModal, setShowCreateAlbumModal] = useState(false);
+  const [showAddSongModal, setShowAddSongModal] = useState(false);
+  const [albumToDelete, setAlbumToDelete] = useState<Album | null>(null);
+  const [newAlbumTitle, setNewAlbumTitle] = useState("");
+  const [newAlbumYear, setNewAlbumYear] = useState("");
+  const [newAlbumCover, setNewAlbumCover] = useState(ALBUM_PRESETS[0]);
+  const [modalError, setModalError] = useState("");
+  const [playStatus, setPlayStatus] = useState<PlayStatus>("idle");
+  const [recentTracks, setRecentTracks] = useState<LibraryTrack[]>([]);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [recsLoading, setRecsLoading] = useState(true);
+  const [recsError, setRecsError] = useState(false);
+  const [currentSong, setCurrentSong] = useState<SongInfo | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [songQuery, setSongQuery] = useState("");
+  const [songSuggestions, setSongSuggestions] = useState<Suggestion[]>([]);
+  const [playList, setPlayList] = useState<LibraryTrack[]>([]);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekPreview, setSeekPreview] = useState(0);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
-
-  const [albums, setAlbums] = useState<Album[]>([]);
-  const [showCreateAlbumModal, setShowCreateAlbumModal] = useState(false);
-  const [newAlbumTitle, setNewAlbumTitle] = useState("");
-  const [newAlbumYear, setNewAlbumYear] = useState("");
-  const [newAlbumCover, setNewAlbumCover] = useState("https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300");
-  const [modalError, setModalError] = useState("");
-
-  const [activeAlbum, setActiveAlbum] = useState<Album | null>(null);
-  const [showAddSongModal, setShowAddSongModal] = useState(false);
-  const [songQuery, setSongQuery] = useState("");
-  const [songSuggestions, setSongSuggestions] = useState<Suggestion[]>([]);
 
   const playbackState = usePlaybackState();
   const progress = useProgress(250);
+  const insets = useSafeAreaInsets();
 
   const recommendationsRef = useRef(recommendations);
-  const userIDRef = useRef(userID);
+  const playListRef = useRef(playList);
   const isAutoplayRef = useRef(isAutoplay);
+  const isShuffledRef = useRef(isShuffled);
   const isPlayerReadyRef = useRef(isPlayerReady);
+  const lastQueryRef = useRef("");
   const sliderWidthRef = useRef(1);
   const volumeSliderWidthRef = useRef(1);
-  const lastHistoryIdRef = useRef("");
-  const lastDurationSyncRef = useRef("");
   const suggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suggestionRequestIdRef = useRef(0);
-  const prefetchedIdsRef = useRef<Set<string>>(new Set());
+  const songSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastDurationSyncRef = useRef("");
+  const pendingSeekRef = useRef<number | null>(null);
+  const lyricsRequestIdRef = useRef(0);
+  const lyricsScrollRef = useRef<ScrollView | null>(null);
+  const lyricLineYRef = useRef<number[]>([]);
+  const lyricsUserScrollRef = useRef(false);
+  const lyricsScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressDurationRef = useRef(0);
 
   recommendationsRef.current = recommendations;
-  userIDRef.current = userID;
+  playListRef.current = playList;
   isAutoplayRef.current = isAutoplay;
+  isShuffledRef.current = isShuffled;
   isPlayerReadyRef.current = isPlayerReady;
+  progressDurationRef.current = progress.duration;
 
-  useEffect(() => {
-    const init = async () => {
+  const likedKeys = new Set(likedTracks.map(trackKey));
+  const isPlaying = playbackState.state === State.Playing;
+  const isBusy = playStatus === "finding" || playbackState.state === State.Buffering || playbackState.state === State.Connecting;
+  const displayedPosition = isSeeking ? seekPreview : progress.position;
+  const sliderRatio = progress.duration > 0 ? Math.max(0, Math.min(1, displayedPosition / progress.duration)) : 0;
+  const lyricIndex = lyrics ? activeLyricIndex(lyrics.lines, displayedPosition, lyrics.synced) : -1;
+  const displaySong = currentSong ? asTrack(currentSong, lastQueryRef.current) : null;
+  const continueTrack = displaySong || (recentTracks[0] ? asTrack(recentTracks[0]) : null);
+  const currentKey = displaySong ? trackKey(displaySong) : "";
+  const currentLiked = displaySong ? likedKeys.has(currentKey) || likedKeys.has(displaySong.title) : false;
+  const greeting = greetingForHour(new Date().getHours());
+  const ghostText = (() =>
+  {
+    if (suggestions.length === 0 || !query.trim())
+    {
+      return "";
+    }
+    const topTitle = suggestions[0].title;
+    if (topTitle.toLowerCase().startsWith(query.toLowerCase()))
+    {
+      return query + topTitle.slice(query.length);
+    }
+    return "";
+  })();
+
+  const upcomingTracks = (): LibraryTrack[] =>
+  {
+    const source = playList.length > 0 ? playList : recommendations;
+    return source.filter((item) => trackKey(item) !== lastQueryRef.current).slice(0, 8);
+  };
+
+  useEffect(() =>
+  {
+    const init = async () =>
+    {
       await setupPlayer();
       setIsPlayerReady(true);
 
-      try {
-        const storedRecentSongs = await AsyncStorage.getItem('recentSongs');
-        const storedLiked = await AsyncStorage.getItem('likedTracks');
-        await AsyncStorage.removeItem('userID');
-        const sessionUser = await ensureSession();
-        if (sessionUser) {
-          setUserID(sessionUser);
+      try
+      {
+        const storedRecent = await AsyncStorage.getItem(STORAGE.recent);
+        const legacyRecent = await AsyncStorage.getItem(STORAGE.legacyRecent);
+        const storedLiked = await AsyncStorage.getItem(STORAGE.liked);
+        const storedAlbums = await AsyncStorage.getItem(STORAGE.albums);
+        const storedPrefs = await AsyncStorage.getItem(STORAGE.prefs);
+        const storedSession = await AsyncStorage.getItem(STORAGE.session);
+
+        if (storedRecent)
+        {
+          setRecentTracks(coerceTrackList(JSON.parse(storedRecent)));
+        }
+        else if (legacyRecent)
+        {
+          setRecentTracks(coerceTrackList(JSON.parse(legacyRecent)));
         }
 
-        if (storedRecentSongs) {
-          setRecentSongs(JSON.parse(storedRecentSongs));
+        if (storedLiked)
+        {
+          setLikedTracks(coerceTrackList(JSON.parse(storedLiked)));
         }
 
-        if (storedLiked) {
-          setLikedTracks(new Set(JSON.parse(storedLiked)));
-        }
-
-        const storedAlbums = await AsyncStorage.getItem('createdAlbums');
-        if (storedAlbums) {
+        if (storedAlbums)
+        {
           const parsed = JSON.parse(storedAlbums);
-          if (Array.isArray(parsed)) {
-            const migrated = parsed.map((a: any, idx: number) => ({
-              id: a.id || `migrated-${idx}-${Date.now()}`,
-              title: a.title || "",
-              year: a.year || "",
-              thumbnail: a.thumbnail || "",
-              songs: Array.isArray(a.songs) ? a.songs : [],
-            }));
-            setAlbums(migrated);
+          if (Array.isArray(parsed))
+          {
+            setAlbums(parsed.map((album: any, index: number) => ({
+              id: album.id || `migrated-${index}`,
+              title: normalizeTrackText(album.title),
+              year: normalizeTrackText(album.year),
+              thumbnail: typeof album.thumbnail === "string" ? album.thumbnail : "",
+              songs: coerceTrackList(album.songs),
+            })));
           }
         }
 
+        if (storedPrefs)
+        {
+          const prefs = JSON.parse(storedPrefs);
+          if (typeof prefs.volume === "number")
+          {
+            setVolume(prefs.volume);
+            await TrackPlayer.setVolume(prefs.volume);
+          }
+          if (typeof prefs.isLooping === "boolean")
+          {
+            setIsLooping(prefs.isLooping);
+            await TrackPlayer.setRepeatMode(prefs.isLooping ? RepeatMode.Track : RepeatMode.Off);
+          }
+          if (typeof prefs.isShuffled === "boolean")
+          {
+            setIsShuffled(prefs.isShuffled);
+          }
+          if (typeof prefs.isAutoplay === "boolean")
+          {
+            setIsAutoplay(prefs.isAutoplay);
+          }
+        }
+
+        if (storedSession)
+        {
+          const session = JSON.parse(storedSession);
+          if (session?.track)
+          {
+            const restored = asTrack(session.track);
+            setCurrentSong(restored);
+            lastQueryRef.current = restored.query;
+            pendingSeekRef.current = session.position || 0;
+            setPlayStatus("paused");
+          }
+        }
+
+        await ensureSession();
         fetchRecommendations();
-      } catch (e) {
-        console.error("Failed to load storage", e);
+      }
+      catch (error)
+      {
+        console.error("Failed to load storage", error);
         fetchRecommendations();
       }
     };
     init();
   }, []);
 
-  const fetchRecommendations = async () => {
-    try {
-      const res = await apiFetch("/recommend?limit=12");
-      if (res.ok) {
-        const data = await res.json();
-        setRecommendations(data.recommendations || []);
-        if (data.user_id) {
-          setUserID(data.user_id);
+  useEffect(() =>
+  {
+    AsyncStorage.setItem(STORAGE.prefs, JSON.stringify({
+      volume,
+      isLooping,
+      isShuffled,
+      isAutoplay,
+    })).catch(() => {});
+  }, [volume, isLooping, isShuffled, isAutoplay]);
+
+  useEffect(() =>
+  {
+    if (!currentSong)
+    {
+      lyricsRequestIdRef.current += 1;
+      setLyrics(null);
+      setLyricsLoading(false);
+      return;
+    }
+
+    const requestId = ++lyricsRequestIdRef.current;
+    const restored = asTrack(currentSong, lastQueryRef.current);
+    const title = restored.title;
+    const artist = restored.artist;
+    const query = restored.query || `${title} ${artist}`.trim();
+    const durationHint = (currentSong.duration && currentSong.duration > 0)
+      ? currentSong.duration
+      : progressDurationRef.current;
+
+    setLyrics(null);
+    setLyricsLoading(true);
+    lyricsUserScrollRef.current = false;
+    lyricLineYRef.current = [];
+
+    apiFetch(lyricsRequestPath(title, artist, query, durationHint), {}, 2)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) =>
+      {
+        if (requestId !== lyricsRequestIdRef.current)
+        {
+          return;
         }
-      }
-    } catch (e) {
-      console.error("Failed to fetch recommendations", e);
-    }
-  };
+        setLyrics(asLyricsData(data));
+        setLyricsLoading(false);
+      })
+      .catch(() =>
+      {
+        if (requestId !== lyricsRequestIdRef.current)
+        {
+          return;
+        }
+        setLyrics({ status: "missing", synced: false, lines: [] });
+        setLyricsLoading(false);
+      });
+  }, [currentSong]);
 
-    const addToHistory = (songName: string) => {
-    if (!songName || lastHistoryIdRef.current === songName) {
+  useEffect(() =>
+  {
+    if (!showLyrics || !showFullPlayer || lyricIndex < 0 || lyricsUserScrollRef.current)
+    {
       return;
     }
-    lastHistoryIdRef.current = songName;
-    setRecentSongs(prev => {
-      const newHistory = [songName, ...prev.filter(s => s !== songName)].slice(0, 10);
-      AsyncStorage.setItem('recentSongs', JSON.stringify(newHistory)).catch(err => console.error("Failed to save history", err));
-      return newHistory;
-    });
-  };
 
-  const removeRecentSong = (songName: string) => {
-    setRecentSongs(prev => {
-      const newHistory = prev.filter(s => s !== songName);
-      AsyncStorage.setItem('recentSongs', JSON.stringify(newHistory)).catch(err => console.error("Failed to save history", err));
-      return newHistory;
-    });
-  };
-
-  const getGhostText = () => {
-    if (suggestions.length === 0 || !query.trim()) return "";
-    const topTitle = suggestions[0].title;
-    if (topTitle.toLowerCase().startsWith(query.toLowerCase())) {
-      return query + topTitle.slice(query.length);
-    }
-    return "";
-  };
-
-  const ghostText = getGhostText();
-
-  const handleCreateAlbum = async () => {
-    if (!newAlbumTitle.trim()) {
-      setModalError("Please enter an album title.");
+    const y = lyricLineYRef.current[lyricIndex];
+    if (y == null)
+    {
       return;
     }
-    const newAlbum: Album = {
-      id: Date.now().toString(),
-      title: newAlbumTitle.trim(),
-      year: newAlbumYear.trim() || new Date().getFullYear().toString(),
-      thumbnail: safeImageUrl(newAlbumCover.trim()) || ALBUM_PRESETS[0],
-      songs: [],
-    };
-    const updatedAlbums = [newAlbum, ...albums];
-    setAlbums(updatedAlbums);
-    try {
-      await AsyncStorage.setItem('createdAlbums', JSON.stringify(updatedAlbums));
-    } catch (err) {
-      console.error("Failed to save album to AsyncStorage", err);
-    }
-    
-    // Reset inputs & close modal
-    setNewAlbumTitle("");
-    setNewAlbumYear("");
-    setNewAlbumCover(ALBUM_PRESETS[0]);
-    setModalError("");
-    setShowCreateAlbumModal(false);
-  };
 
-  const fetchSongSuggestions = async (text: string) => {
-    try {
-      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
-      if (res.ok) {
+    lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: true });
+  }, [lyricIndex, showLyrics, showFullPlayer]);
+
+  const fetchRecommendations = async () =>
+  {
+    setRecsLoading(true);
+    setRecsError(false);
+    try
+    {
+      const res = await apiFetch("/recommend?limit=12");
+      if (res.ok)
+      {
         const data = await res.json();
-        setSongSuggestions(data.suggestions || []);
+        setRecommendations(coerceTrackList(data.recommendations));
       }
-    } catch (e) {
-      console.error(e);
+      else
+      {
+        setRecsError(true);
+      }
+    }
+    catch (error)
+    {
+      console.error("Failed to fetch recommendations", error);
+      setRecsError(true);
+    }
+    finally
+    {
+      setRecsLoading(false);
     }
   };
 
-  const handleSongQueryChange = (text: string) => {
-    setSongQuery(text);
-    if (text.trim().length >= SUGGESTION_MIN_CHARS) {
-      if (suggestionTimerRef.current) clearTimeout(suggestionTimerRef.current);
-      suggestionTimerRef.current = setTimeout(() => {
-        fetchSongSuggestions(text);
-      }, SUGGESTION_DEBOUNCE_MS);
-    } else {
-      setSongSuggestions([]);
-    }
+  const addToHistory = (track: LibraryTrack) =>
+  {
+    setRecentTracks((prev) =>
+    {
+      const next = [track, ...prev.filter((item) => trackKey(item) !== trackKey(track))].slice(0, 20);
+      AsyncStorage.setItem(STORAGE.recent, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
   };
 
-  const handleAddSongToAlbum = async (song: Recommendation | Suggestion) => {
-    if (!activeAlbum) return;
+  const removeRecentTrack = (track: LibraryTrack) =>
+  {
+    setRecentTracks((prev) =>
+    {
+      const next = prev.filter((item) => trackKey(item) !== trackKey(track));
+      AsyncStorage.setItem(STORAGE.recent, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  };
 
-    const songToAdd: Recommendation = 'query' in song ? song : {
-      title: song.title,
-      artist: song.artist,
-      thumbnail: song.thumbnail,
-      query: `${song.title} ${song.artist}`.trim(),
-    };
+  const clearRecentTracks = () =>
+  {
+    setRecentTracks([]);
+    AsyncStorage.multiRemove([STORAGE.recent, STORAGE.legacyRecent]).catch(() => {});
+  };
 
-    if (activeAlbum.songs.some(s => s.title === songToAdd.title && s.artist === songToAdd.artist)) {
-      setModalError("Song is already in this album!");
+  const saveAlbums = (next: Album[]) =>
+  {
+    setAlbums(next);
+    AsyncStorage.setItem(STORAGE.albums, JSON.stringify(next)).catch(() => {});
+  };
+
+  const persistSession = (song: SongInfo | null, position: number) =>
+  {
+    if (!song)
+    {
+      AsyncStorage.removeItem(STORAGE.session).catch(() => {});
       return;
     }
-
-    const updatedSongs = [...activeAlbum.songs, songToAdd];
-    const updatedActiveAlbum = { ...activeAlbum, songs: updatedSongs };
-    setActiveAlbum(updatedActiveAlbum);
-
-    const updatedAlbums = albums.map(a => a.id === activeAlbum.id ? updatedActiveAlbum : a);
-    setAlbums(updatedAlbums);
-    try {
-      await AsyncStorage.setItem('createdAlbums', JSON.stringify(updatedAlbums));
-    } catch (err) {
-      console.error("Failed to save updated albums", err);
-    }
-
-    setSongQuery("");
-    setSongSuggestions([]);
-    setModalError("");
-    setShowAddSongModal(false);
+    AsyncStorage.setItem(STORAGE.session, JSON.stringify({
+      track: asTrack(song, lastQueryRef.current || trackKey(song)),
+      position,
+    })).catch(() => {});
   };
 
-  const handleRemoveSongFromAlbum = async (songTitle: string) => {
-    if (!activeAlbum) return;
-
-    const updatedSongs = activeAlbum.songs.filter(s => s.title !== songTitle);
-    const updatedActiveAlbum = { ...activeAlbum, songs: updatedSongs };
-    setActiveAlbum(updatedActiveAlbum);
-
-    const updatedAlbums = albums.map(a => a.id === activeAlbum.id ? updatedActiveAlbum : a);
-    setAlbums(updatedAlbums);
-    try {
-      await AsyncStorage.setItem('createdAlbums', JSON.stringify(updatedAlbums));
-    } catch (err) {
-      console.error("Failed to save updated albums", err);
-    }
-  };
-
-  const enqueueUpcoming = async (excludeId: string) => {
+  const enqueueUpcoming = async (excludeId: string, source?: LibraryTrack[]) =>
+  {
     const queue = await TrackPlayer.getQueue();
-    const queuedIds = new Set(queue.map(track => String(track.id)));
-    const upcomingRecs = recommendationsRef.current
-      .filter(rec => rec.query && rec.query !== excludeId && !queuedIds.has(rec.query))
-      .slice(0, UPCOMING_QUEUE_SIZE);
+    const queuedIds = new Set(queue.map((track) => String(track.id)));
+    let upcoming = (source && source.length > 0 ? source : recommendationsRef.current)
+      .filter((rec) => rec.query && rec.query !== excludeId && !queuedIds.has(rec.query));
+    if (isShuffledRef.current)
+    {
+      upcoming = shuffleArray(upcoming);
+    }
+    upcoming = upcoming.slice(0, UPCOMING_QUEUE_SIZE);
 
-    for (const rec of upcomingRecs) {
-      try {
+    for (const rec of upcoming)
+    {
+      try
+      {
         const stream = await resolveStream(rec.query);
         await TrackPlayer.add(toPlayerTrack(rec.query, rec, stream));
-      } catch (e) {
-        console.error("Failed to enqueue upcoming", e);
       }
-    }
-
-    const extras = recommendationsRef.current
-      .filter(rec => rec.query && rec.query !== excludeId && !queuedIds.has(rec.query) && rec.videoId)
-      .slice(UPCOMING_QUEUE_SIZE, UPCOMING_QUEUE_SIZE + 4);
-    for (const rec of extras) {
-      apiFetch("/cache/prefetch", {
-        method: "POST",
-        body: JSON.stringify({ video_id: rec.videoId, query: rec.query }),
-      }).catch(() => {});
+      catch (error)
+      {
+        console.error("Failed to enqueue upcoming", error);
+      }
     }
   };
 
-  const topUpQueue = async () => {
+  const topUpQueue = async () =>
+  {
     const queue = await TrackPlayer.getQueue();
     const index = await TrackPlayer.getActiveTrackIndex();
-    if (index == null) {
+    if (index == null)
+    {
       return;
     }
     const remaining = queue.length - index - 1;
-    if (remaining >= 2) {
+    if (remaining >= 2)
+    {
       return;
     }
     const active = queue[index];
-    await enqueueUpcoming(String(active?.id || ""));
+    await enqueueUpcoming(String(active?.id || ""), playListRef.current);
   };
 
-  const syncTrackDuration = async () => {
+  const syncTrackDuration = async () =>
+  {
     const progressNow = await TrackPlayer.getProgress();
     const index = await TrackPlayer.getActiveTrackIndex();
     const active = await TrackPlayer.getActiveTrack();
-    if (index == null || !active || progressNow.duration <= 0) {
+    if (index == null || !active || progressNow.duration <= 0)
+    {
       return;
     }
     const key = `${active.id}:${Math.round(progressNow.duration)}`;
-    if (lastDurationSyncRef.current === key) {
+    if (lastDurationSyncRef.current === key)
+    {
       return;
     }
     lastDurationSyncRef.current = key;
     await TrackPlayer.updateMetadataForTrack(index, { duration: progressNow.duration });
   };
 
-  const clearSuggestions = () => {
-    if (suggestionTimerRef.current) {
-      clearTimeout(suggestionTimerRef.current);
-      suggestionTimerRef.current = null;
-    }
-    suggestionRequestIdRef.current += 1;
-    setSuggestions([]);
-    setHighlightedIndex(0);
-  };
-
-  const prefetchSuggestion = (s: Suggestion) => {
-    if (!s.id || prefetchedIdsRef.current.has(s.id)) {
+  const playSong = async (songInput: string | LibraryTrack | Recommendation, list?: LibraryTrack[]) =>
+  {
+    if (!isPlayerReadyRef.current)
+    {
       return;
     }
-    prefetchedIdsRef.current.add(s.id);
-    apiFetch("/cache/prefetch", {
-      method: 'POST',
-      body: JSON.stringify({ video_id: s.id, query: suggestionPlayKey(s) }),
-    }).catch(() => {
-      prefetchedIdsRef.current.delete(s.id);
-    });
-  };
-
-  const fetchSuggestions = async (text: string) => {
-    const requestId = ++suggestionRequestIdRef.current;
-    try {
-      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
-      if (!res.ok || requestId !== suggestionRequestIdRef.current) {
-        return;
-      }
-      const data = await res.json();
-      if (requestId !== suggestionRequestIdRef.current) {
-        return;
-      }
-      const items: Suggestion[] = data.suggestions || [];
-      setSuggestions(items);
-      setHighlightedIndex(0);
-      if (items[0]) {
-        prefetchSuggestion(items[0]);
-      }
-    } catch (e) {
-      console.error("Failed to fetch suggestions", e);
-    }
-  };
-
-  const handleQueryChange = (text: string) => {
-    setQuery(text);
-    if (suggestionTimerRef.current) {
-      clearTimeout(suggestionTimerRef.current);
-      suggestionTimerRef.current = null;
-    }
-
-    const trimmed = text.trim();
-    if (trimmed.length < SUGGESTION_MIN_CHARS) {
-      suggestionRequestIdRef.current += 1;
-      setSuggestions([]);
-      setHighlightedIndex(0);
-      return;
-    }
-
-    suggestionTimerRef.current = setTimeout(() => fetchSuggestions(trimmed), SUGGESTION_DEBOUNCE_MS);
-  };
-
-  const playSuggestion = (s: Suggestion) => {
-    playSong({
-      title: s.title,
-      artist: s.artist,
-      thumbnail: s.thumbnail,
-      query: suggestionPlayKey(s),
-    });
-  };
-
-  const onSearchSubmit = () => {
-    if (suggestions.length > 0) {
-      const target = suggestions[Math.min(highlightedIndex, suggestions.length - 1)];
-      playSuggestion(target);
-      return;
-    }
-    playSong(query);
-  };
-
-  const onSearchKeyPress = (key: string) => {
-    if (suggestions.length === 0) {
-      return;
-    }
-    if (key === 'ArrowDown') {
-      setHighlightedIndex(prev => (prev + 1) % suggestions.length);
-    } else if (key === 'ArrowUp') {
-      setHighlightedIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
-    }
-  };
-
-  const playSong = async (songInput: string | Recommendation) => {
-    if (!isPlayerReadyRef.current) return;
     clearSuggestions();
 
-    let songName = "";
-    let songInfo: SongInfo | null = null;
+    let track: LibraryTrack;
     let infoPromise: Promise<SongInfo | null> | null = null;
 
-    if (typeof songInput === 'string') {
-        songName = songInput;
-        infoPromise = apiFetch(`/info/${encodeURIComponent(songName)}`)
-          .then(res => (res.ok ? res.json() : null))
-          .catch(() => null);
-    } else {
-        songName = songInput.query;
-        songInfo = {
-            title: songInput.title,
-            artist: songInput.artist,
-            thumbnail: songInput.thumbnail
-        };
+    if (typeof songInput === "string")
+    {
+      if (!songInput.trim())
+      {
+        return;
+      }
+      track = { title: songInput.trim(), artist: "", thumbnail: "", query: songInput.trim() };
+      infoPromise = apiFetch(`/info/${encodeURIComponent(track.query)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .catch(() => null);
+    }
+    else
+    {
+      track = asTrack(songInput);
     }
 
-    if (!songName) return;
+    lastQueryRef.current = track.query;
+    setQuery(track.query);
+    setCurrentSong(track);
+    setPlayStatus("finding");
+    addToHistory(track);
+    setRecommendations((prev) => prev.filter((item) => item.query !== track.query));
 
-    setQuery(songName);
-    setCurrentSong(songInfo || { title: songName, artist: "", thumbnail: "" });
-    setStatus("Searching & Loading...");
-    setRecommendations(prev => prev.filter(r => r.query !== songName));
-    addToHistory(songName);
+    const extras = list && list.length > 0
+      ? list.map((item) => asTrack(item))
+      : recommendationsRef.current.map((item) => asTrack(item));
+    const rest = extras.filter((item) => trackKey(item) !== trackKey(track));
+    setPlayList(isShuffledRef.current ? [track, ...shuffleArray(rest)] : [track, ...rest]);
 
-    try {
-      const stream = await resolveStream(songName);
+    try
+    {
+      const stream = await resolveStream(track.query);
       await TrackPlayer.reset();
-      await TrackPlayer.add(toPlayerTrack(songName, songInfo, stream));
+      await TrackPlayer.add(toPlayerTrack(track.query, track, stream));
       await TrackPlayer.play();
-      setStatus("Playing");
-      enqueueUpcoming(songName).catch(err => console.error("Failed to enqueue upcoming", err));
-    } catch (e) {
-      console.error('Error playing song:', e);
-      setStatus("Error playing");
+      if (pendingSeekRef.current)
+      {
+        await TrackPlayer.seekTo(pendingSeekRef.current);
+        pendingSeekRef.current = null;
+      }
+      setPlayStatus("playing");
+      enqueueUpcoming(track.query, extras).catch((error) => console.error("Failed to enqueue upcoming", error));
+    }
+    catch (error)
+    {
+      console.error("Error playing song:", error);
+      setPlayStatus("error");
     }
 
-    if (infoPromise) {
-      infoPromise.then(info => {
-        if (!info) return;
-        setCurrentSong(info);
+    if (infoPromise)
+    {
+      infoPromise.then((info) =>
+      {
+        if (!info)
+        {
+          return;
+        }
+        const resolved = asTrack(info, track.query);
+        setCurrentSong({
+          ...resolved,
+          duration: typeof info.duration === "number" ? info.duration : undefined,
+        });
         TrackPlayer.updateMetadataForTrack(0, {
           title: info.title,
           artist: info.artist,
@@ -653,411 +966,795 @@ export default function App() {
 
   useTrackPlayerEvents(
     [Event.PlaybackActiveTrackChanged, Event.PlaybackQueueEnded, Event.PlaybackProgressUpdated, Event.PlaybackError],
-    async (event) => {
-      if (event.type === Event.PlaybackActiveTrackChanged) {
+    async (event) =>
+    {
+      if (event.type === Event.PlaybackActiveTrackChanged)
+      {
         const track = event.track;
-        if (!track) {
+        if (!track)
+        {
           return;
         }
         const songName = String(track.id || track.title || "");
-        setCurrentSong({
+        const nextSong = {
           title: String(track.title || songName),
           artist: String(track.artist || "ZIZO Music"),
           thumbnail: typeof track.artwork === "string" ? track.artwork : "",
-        });
-        if (songName) {
+        };
+        setCurrentSong(nextSong);
+        setPlayStatus("playing");
+        if (songName)
+        {
+          lastQueryRef.current = songName;
           setQuery(songName);
-          addToHistory(songName);
-          setRecommendations(prev => prev.filter(r => r.query !== songName));
+          addToHistory(asTrack(nextSong, songName));
+          setRecommendations((prev) => prev.filter((item) => item.query !== songName));
         }
         await topUpQueue();
         await syncTrackDuration();
       }
 
-      if (event.type === Event.PlaybackProgressUpdated) {
+      if (event.type === Event.PlaybackProgressUpdated)
+      {
         await syncTrackDuration();
-      }
-
-      if (event.type === Event.PlaybackQueueEnded && isAutoplayRef.current) {
-        const nextRec = recommendationsRef.current[0];
-        if (nextRec) {
-          playSong(nextRec);
+        const active = await TrackPlayer.getActiveTrack();
+        if (active)
+        {
+          persistSession({
+            title: String(active.title || ""),
+            artist: String(active.artist || ""),
+            thumbnail: typeof active.artwork === "string" ? active.artwork : "",
+          }, event.position);
         }
       }
 
-      if (event.type === Event.PlaybackError) {
+      if (event.type === Event.PlaybackQueueEnded && isAutoplayRef.current)
+      {
+        const upcoming = upcomingTracks()[0];
+        if (upcoming)
+        {
+          playSong(upcoming, playListRef.current.length ? playListRef.current : recommendationsRef.current);
+        }
+      }
+
+      if (event.type === Event.PlaybackError)
+      {
         const active = await TrackPlayer.getActiveTrack();
         const progressNow = await TrackPlayer.getProgress();
         const songName = String(active?.id || "");
-        if (!songName) {
-          setStatus("Error playing");
+        if (!songName)
+        {
+          setPlayStatus("error");
           return;
         }
-        try {
+        try
+        {
           const stream = await resolveStream(songName);
           const index = await TrackPlayer.getActiveTrackIndex();
-          if (index == null) {
+          if (index == null)
+          {
             return;
           }
           await TrackPlayer.remove(index);
-          await TrackPlayer.add(
-            toPlayerTrack(songName, {
-              title: String(active?.title || songName),
-              artist: String(active?.artist || "ZIZO Music"),
-              thumbnail: typeof active?.artwork === "string" ? active.artwork : "",
-            }, stream),
-            index
-          );
+          await TrackPlayer.add(toPlayerTrack(songName, {
+            title: String(active?.title || songName),
+            artist: String(active?.artist || "ZIZO Music"),
+            thumbnail: typeof active?.artwork === "string" ? active.artwork : "",
+          }, stream), index);
           await TrackPlayer.skip(index);
-          if (progressNow.position > 2) {
+          if (progressNow.position > 2)
+          {
             await TrackPlayer.seekTo(progressNow.position);
           }
           await TrackPlayer.play();
-          setStatus("Playing");
-        } catch (e) {
-          console.error("Playback recover failed", e);
-          setStatus("Error playing");
+          setPlayStatus("playing");
+        }
+        catch (error)
+        {
+          console.error("Playback recover failed", error);
+          setPlayStatus("error");
         }
       }
     }
   );
 
-  const toggleLoop = async () => {
-    const newLooping = !isLooping;
-    setIsLooping(newLooping);
-    await TrackPlayer.setRepeatMode(newLooping ? RepeatMode.Track : RepeatMode.Off);
+  const toggleLoop = async () =>
+  {
+    const next = !isLooping;
+    setIsLooping(next);
+    await TrackPlayer.setRepeatMode(next ? RepeatMode.Track : RepeatMode.Off);
   };
 
-  const togglePlayback = async () => {
+  const toggleShuffle = () =>
+  {
+    setIsShuffled(!isShuffled);
+  };
+
+  const togglePlayback = async () =>
+  {
+    const queue = await TrackPlayer.getQueue();
+    if (queue.length === 0 && currentSong)
+    {
+      await playSong(asTrack(currentSong, lastQueryRef.current));
+      return;
+    }
     const state = await TrackPlayer.getPlaybackState();
-    if (state.state === State.Playing) {
+    if (state.state === State.Playing)
+    {
       await TrackPlayer.pause();
-    } else {
+      setPlayStatus("paused");
+    }
+    else
+    {
       await TrackPlayer.play();
+      setPlayStatus("playing");
     }
   };
 
-  const toggleLike = async (title: string) => {
-    const newLiked = new Set(likedTracks);
-    if (newLiked.has(title)) {
-      newLiked.delete(title);
-    } else {
-      newLiked.add(title);
-    }
-    setLikedTracks(newLiked);
-    await AsyncStorage.setItem('likedTracks', JSON.stringify(Array.from(newLiked)));
+  const toggleLike = async (song: SongInfo | LibraryTrack) =>
+  {
+    const track = asTrack(song, "query" in song ? song.query : lastQueryRef.current);
+    const key = trackKey(track);
+    const exists = likedTracks.some((item) => trackKey(item) === key);
+    const next = exists ? likedTracks.filter((item) => trackKey(item) !== key) : [track, ...likedTracks];
+    setLikedTracks(next);
+    await AsyncStorage.setItem(STORAGE.liked, JSON.stringify(next));
   };
 
-  const skipNext = async () => {
-    try {
+  const skipNext = async () =>
+  {
+    try
+    {
       const queue = await TrackPlayer.getQueue();
       const index = await TrackPlayer.getActiveTrackIndex();
-      if (index != null && index < queue.length - 1) {
+      if (index != null && index < queue.length - 1)
+      {
         await TrackPlayer.skipToNext();
         return;
       }
-    } catch (e) {
-      console.error(e);
     }
-    const nextRec = recommendationsRef.current[0];
-    if (nextRec) {
-      await playSong(nextRec);
+    catch (error)
+    {
+      console.error(error);
+    }
+    const next = upcomingTracks()[0];
+    if (next)
+    {
+      await playSong(next, playListRef.current.length ? playListRef.current : recommendationsRef.current);
     }
   };
 
-  const skipPrevious = async () => {
-    try {
+  const skipPrevious = async () =>
+  {
+    try
+    {
       const index = await TrackPlayer.getActiveTrackIndex();
       const progressNow = await TrackPlayer.getProgress();
-      if (progressNow.position > 3) {
+      if (progressNow.position > 3)
+      {
         await TrackPlayer.seekTo(0);
         return;
       }
-      if (index != null && index > 0) {
+      if (index != null && index > 0)
+      {
         await TrackPlayer.skip(index - 1);
         return;
       }
-    } catch (e) {
-      console.error(e);
+    }
+    catch (error)
+    {
+      console.error(error);
     }
   };
 
-  // Seeker custom slider handlers
-  const positionForSlider = (event: GestureResponderEvent) => {
-    const x = event.nativeEvent.locationX;
-    const ratio = Math.max(0, Math.min(1, x / sliderWidthRef.current));
+  const positionForSlider = (event: GestureResponderEvent) =>
+  {
+    const ratio = Math.max(0, Math.min(1, event.nativeEvent.locationX / sliderWidthRef.current));
     return ratio * (progress.duration || 0);
   };
 
-  const onSliderGrant = (event: GestureResponderEvent) => {
-    if (progress.duration <= 0) return;
+  const onSliderGrant = (event: GestureResponderEvent) =>
+  {
+    if (progress.duration <= 0)
+    {
+      return;
+    }
     setIsSeeking(true);
     setSeekPreview(positionForSlider(event));
   };
 
-  const onSliderMove = (event: GestureResponderEvent) => {
-    if (!isSeeking || progress.duration <= 0) return;
+  const onSliderMove = (event: GestureResponderEvent) =>
+  {
+    if (!isSeeking || progress.duration <= 0)
+    {
+      return;
+    }
     setSeekPreview(positionForSlider(event));
   };
 
-  const onSliderRelease = async (event: GestureResponderEvent) => {
-    if (progress.duration <= 0) {
+  const onSliderRelease = async (event: GestureResponderEvent) =>
+  {
+    if (progress.duration <= 0)
+    {
       setIsSeeking(false);
       return;
     }
     const nextPosition = positionForSlider(event);
     setSeekPreview(nextPosition);
-    try {
+    try
+    {
       await TrackPlayer.seekTo(nextPosition);
-    } catch (e) {
-      console.error("Seek failed", e);
+    }
+    catch (error)
+    {
+      console.error("Seek failed", error);
     }
     setIsSeeking(false);
   };
 
-  const displayedPosition = isSeeking ? seekPreview : progress.position;
-  const sliderRatio = progress.duration > 0 ? Math.max(0, Math.min(1, displayedPosition / progress.duration)) : 0;
-
-  // Volume slider handlers
-  const volumeForSlider = (event: GestureResponderEvent) => {
-    const x = event.nativeEvent.locationX;
-    return Math.max(0, Math.min(1, x / volumeSliderWidthRef.current));
+  const seekToLyric = async (time: number) =>
+  {
+    if (!Number.isFinite(time))
+    {
+      return;
+    }
+    lyricsUserScrollRef.current = false;
+    try
+    {
+      await TrackPlayer.seekTo(time);
+    }
+    catch (error)
+    {
+      console.error("Lyric seek failed", error);
+    }
   };
 
-  const onVolumeGrant = async (event: GestureResponderEvent) => {
-    const vol = volumeForSlider(event);
-    setVolume(vol);
-    await TrackPlayer.setVolume(vol);
+  const markLyricsUserScroll = () =>
+  {
+    lyricsUserScrollRef.current = true;
+    if (lyricsScrollTimerRef.current)
+    {
+      clearTimeout(lyricsScrollTimerRef.current);
+    }
+    lyricsScrollTimerRef.current = setTimeout(() =>
+    {
+      lyricsUserScrollRef.current = false;
+    }, 2500);
   };
 
-  const onVolumeMove = async (event: GestureResponderEvent) => {
-    const vol = volumeForSlider(event);
-    setVolume(vol);
-    await TrackPlayer.setVolume(vol);
+  const volumeForSlider = (event: GestureResponderEvent) =>
+    Math.max(0, Math.min(1, event.nativeEvent.locationX / volumeSliderWidthRef.current));
+
+  const onVolumeGrant = async (event: GestureResponderEvent) =>
+  {
+    const next = volumeForSlider(event);
+    setVolume(next);
+    await TrackPlayer.setVolume(next);
   };
 
-  const selectGenre = (genre: string) => {
+  const canSkipNext = upcomingTracks().length > 0;
+  const canSkipPrev = displayedPosition > 3;
+
+  const handleCreateAlbum = async () =>
+  {
+    if (!newAlbumTitle.trim())
+    {
+      setModalError("Please enter an album title.");
+      return;
+    }
+    const album: Album = {
+      id: Date.now().toString(),
+      title: newAlbumTitle.trim(),
+      year: newAlbumYear.trim() || new Date().getFullYear().toString(),
+      thumbnail: safeImageUrl(newAlbumCover.trim()) || ALBUM_PRESETS[0],
+      songs: [],
+    };
+    saveAlbums([album, ...albums]);
+    setNewAlbumTitle("");
+    setNewAlbumYear("");
+    setNewAlbumCover(ALBUM_PRESETS[0]);
+    setModalError("");
+    setShowCreateAlbumModal(false);
+    setActiveAlbum(album);
+    setLibraryView("album");
+    setActiveTab("library");
+  };
+
+  const confirmDeleteAlbum = () =>
+  {
+    if (!albumToDelete)
+    {
+      return;
+    }
+    const next = albums.filter((album) => album.id !== albumToDelete.id);
+    saveAlbums(next);
+    if (activeAlbum?.id === albumToDelete.id)
+    {
+      setActiveAlbum(null);
+      setLibraryView("root");
+    }
+    setAlbumToDelete(null);
+  };
+
+  const handleAddSongToAlbum = (song: LibraryTrack | Suggestion | Recommendation) =>
+  {
+    if (!activeAlbum)
+    {
+      return;
+    }
+    const track = asTrack(song);
+    if (activeAlbum.songs.some((item) => trackKey(item) === trackKey(track)))
+    {
+      setModalError("This song is already in the album.");
+      return;
+    }
+    const updated = { ...activeAlbum, songs: [...activeAlbum.songs, track] };
+    setActiveAlbum(updated);
+    saveAlbums(albums.map((album) => (album.id === updated.id ? updated : album)));
+    setSongQuery("");
+    setSongSuggestions([]);
+    setModalError("");
+    setShowAddSongModal(false);
+  };
+
+  const handleRemoveSongFromAlbum = (track: LibraryTrack) =>
+  {
+    if (!activeAlbum)
+    {
+      return;
+    }
+    const updated = { ...activeAlbum, songs: activeAlbum.songs.filter((item) => trackKey(item) !== trackKey(track)) };
+    setActiveAlbum(updated);
+    saveAlbums(albums.map((album) => (album.id === updated.id ? updated : album)));
+  };
+
+  const clearSuggestions = () =>
+  {
+    if (suggestionTimerRef.current)
+    {
+      clearTimeout(suggestionTimerRef.current);
+    }
+    suggestionRequestIdRef.current += 1;
+    setSuggestions([]);
+    setSearchLoading(false);
+    setSearchError(false);
+    setHighlightedIndex(0);
+  };
+
+  const fetchSuggestions = async (text: string) =>
+  {
+    const requestId = ++suggestionRequestIdRef.current;
+    setSearchLoading(true);
+    setSearchError(false);
+    try
+    {
+      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=8`);
+      if (requestId !== suggestionRequestIdRef.current)
+      {
+        return;
+      }
+      if (!res.ok)
+      {
+        setSearchError(true);
+        setSuggestions([]);
+        return;
+      }
+      const data = await res.json();
+      setSuggestions(data.suggestions || []);
+      setHighlightedIndex(0);
+    }
+    catch (error)
+    {
+      if (requestId === suggestionRequestIdRef.current)
+      {
+        console.error(error);
+        setSearchError(true);
+      }
+    }
+    finally
+    {
+      if (requestId === suggestionRequestIdRef.current)
+      {
+        setSearchLoading(false);
+      }
+    }
+  };
+
+  const handleQueryChange = (text: string) =>
+  {
+    setQuery(text);
+    if (suggestionTimerRef.current)
+    {
+      clearTimeout(suggestionTimerRef.current);
+    }
+    if (text.trim().length < SUGGESTION_MIN_CHARS)
+    {
+      clearSuggestions();
+      return;
+    }
+    suggestionTimerRef.current = setTimeout(() => fetchSuggestions(text.trim()), SUGGESTION_DEBOUNCE_MS);
+  };
+
+  const playSuggestion = (suggestion: Suggestion) =>
+  {
+    const track = asTrack(suggestion);
+    playSong(track, [track, ...recommendations]);
+    setSuggestions([]);
+    setQuery("");
+  };
+
+  const onSearchSubmit = () =>
+  {
+    if (suggestions.length > 0)
+    {
+      playSuggestion(suggestions[Math.min(highlightedIndex, suggestions.length - 1)]);
+      return;
+    }
+    if (query.trim())
+    {
+      playSong(query.trim());
+    }
+  };
+
+  const fetchSongSuggestions = async (text: string) =>
+  {
+    try
+    {
+      const res = await apiFetch(`/search/suggestions?q=${encodeURIComponent(text)}&limit=5`);
+      if (res.ok)
+      {
+        const data = await res.json();
+        setSongSuggestions(data.suggestions || []);
+      }
+    }
+    catch (error)
+    {
+      console.error(error);
+    }
+  };
+
+  const handleSongQueryChange = (text: string) =>
+  {
+    setSongQuery(text);
+    if (songSuggestionTimerRef.current)
+    {
+      clearTimeout(songSuggestionTimerRef.current);
+    }
+    if (text.trim().length < SUGGESTION_MIN_CHARS)
+    {
+      setSongSuggestions([]);
+      return;
+    }
+    songSuggestionTimerRef.current = setTimeout(() => fetchSongSuggestions(text.trim()), SUGGESTION_DEBOUNCE_MS);
+  };
+
+  const selectGenre = (genre: string) =>
+  {
+    setActiveTab("search");
     setQuery(genre);
     fetchSuggestions(genre);
   };
 
-  // Live mapping of playlist tracks based on current state or recommendations
-  const getLibraryTracks = () => {
-    if (recommendations.length > 0) {
-      return recommendations.slice(0, 10);
-    }
-    // Fallback if recommendations are empty
-    return [
-      { title: "Astral Drift", artist: "Hyperion", query: "Astral Drift Hyperion", thumbnail: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150" },
-      { title: "Virtual Horizon", artist: "Kozmos", query: "Virtual Horizon Kozmos", thumbnail: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=150" },
-      { title: "Synthesized Mind", artist: "Vector Unit", query: "Synthesized Mind Vector Unit", thumbnail: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=150" },
-      { title: "Retro Future", artist: "Daft Punk", query: "Retro Future Daft Punk", thumbnail: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150" },
-      { title: "Neon Wanderer", artist: "Stellar", query: "Neon Wanderer Stellar", thumbnail: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150" },
-    ];
+  const goHome = () =>
+  {
+    setActiveTab("home");
+    setLibraryView("root");
+    setActiveAlbum(null);
+    clearSuggestions();
   };
 
-  // Artist data (live mapping)
-  const getArtistDetails = () => {
-    const defaultArtist = "Aetheris";
-    const defaultArt = "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=800";
-    const currentArtist = currentSong && currentSong.artist !== "ZIZO Music" ? currentSong.artist : defaultArtist;
-    const currentArt = currentSong?.thumbnail || defaultArt;
-    
-    // Map dynamic songs for the artist
-    const popularTracks = recommendations.slice(0, 3).map((rec, idx) => ({
-      id: `0${idx + 1}`,
-      title: rec.title,
-      artist: rec.artist,
-      plays: `${(15.2 - idx * 3.4).toFixed(1)}M`,
-      thumbnail: rec.thumbnail,
-      query: rec.query,
-    }));
-
-    if (popularTracks.length === 0) {
-      // Fallback popular tracks
-      popularTracks.push(
-        { id: "01", title: "Lost In Translation", artist: currentArtist, plays: "14.2M", thumbnail: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150", query: `Lost In Translation ${currentArtist}` },
-        { id: "02", title: "Static Dreams", artist: currentArtist, plays: "8.9M", thumbnail: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=150", query: `Static Dreams ${currentArtist}` },
-        { id: "03", title: "Subzero", artist: currentArtist, plays: "5.1M", thumbnail: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=150", query: `Subzero ${currentArtist}` }
-      );
-    }
-
-    return {
-      name: currentArtist.toUpperCase(),
-      banner: currentArt,
-      listeners: "1,452,098 monthly listeners",
-      popularTracks,
-      albums: albums
-    };
+  const openAlbum = (album: Album) =>
+  {
+    setActiveAlbum(album);
+    setLibraryView("album");
+    setActiveTab("library");
   };
 
-  const artist = getArtistDetails();
-  const libraryTracks = getLibraryTracks();
+  const renderTrackRow = (track: LibraryTrack, options?: { index?: number; onRemove?: () => void; list?: LibraryTrack[] }) =>
+  {
+    const playingHere = currentKey !== "" && trackKey(track) === currentKey;
+    return (
+      <View key={`${trackKey(track)}-${options?.index ?? 0}`} style={[styles.trackRow, playingHere && styles.trackRowActive]}>
+        <TouchableOpacity style={styles.trackRowMain} onPress={() => playSong(track, options?.list)} accessibilityLabel={`Play ${track.title}`}>
+          {options?.index != null ? (
+            <Text style={styles.trackIndex}>{String(options.index + 1).padStart(2, "0")}</Text>
+          ) : null}
+          <Cover uri={track.thumbnail} style={styles.trackThumb} />
+          <View style={styles.trackMeta}>
+            <Text numberOfLines={1} style={[styles.trackTitle, playingHere && { color: COLORS.teal }]}>{track.title}</Text>
+            <Text numberOfLines={1} style={styles.trackArtist}>{track.artist || "Unknown artist"}</Text>
+          </View>
+          <PlayIcon size={16} color={COLORS.teal} />
+        </TouchableOpacity>
+        {options?.onRemove ? (
+          <TouchableOpacity onPress={options.onRemove} accessibilityLabel="Remove" style={styles.iconHit}>
+            <TrashIcon size={16} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    );
+  };
+
+  const playerStatusLabel = playStatus === "finding"
+    ? "Finding track"
+    : isBusy
+      ? "Buffering"
+      : playStatus === "error"
+        ? "Couldn't play this track"
+        : "";
+
+  const tabBarHeight = 64 + insets.bottom;
+  const bottomPad = (currentSong ? 148 : 80) + insets.bottom;
 
   return (
-    <SafeAreaProvider>
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={["top"]}>
         <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-        
-        {/* Main Content Area based on Active Tab */}
         <View style={styles.tabContentContainer}>
-          {activeAlbum ? (
-            <ScrollView style={styles.scrollScreen} contentContainerStyle={{ paddingBottom: 120 }}>
-              {/* Album Details Screen */}
-              <View style={styles.playlistHeaderContainer}>
-                <Image 
-                  source={{ uri: activeAlbum.thumbnail || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400" }} 
-                  style={styles.playlistCoverArtBig} 
-                />
-                <View style={styles.playlistDetailsMetadataContainer}>
-                  <TouchableOpacity style={styles.playlistBackButton} onPress={() => setActiveAlbum(null)}>
-                    <Text style={styles.backButtonText}>❮</Text>
+          {activeTab === "home" && (
+            <ScrollView style={styles.scrollScreen} contentContainerStyle={{ paddingBottom: bottomPad, paddingHorizontal: 20, paddingTop: 16 }}>
+              <Text style={styles.wordmark}>ZIZO Music</Text>
+              <Text style={styles.pageTitle}>{greeting}</Text>
+              <Text style={styles.pageSubtitle}>Pick up where you left off, or find something new.</Text>
+
+              {continueTrack ? (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Continue listening</Text>
+                  <TouchableOpacity style={styles.continueCard} onPress={() => playSong(continueTrack, recentTracks)}>
+                    <Cover uri={continueTrack.thumbnail} style={styles.continueArt} size={72} />
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={1} style={styles.trackTitleLarge}>{continueTrack.title}</Text>
+                      <Text numberOfLines={1} style={styles.trackArtist}>{continueTrack.artist || "Unknown artist"}</Text>
+                    </View>
+                    <View style={styles.playCircle}>
+                      <PlayIcon size={18} color={COLORS.textDark} />
+                    </View>
                   </TouchableOpacity>
-                  <Text numberOfLines={2} style={styles.playlistBigTitleHeader}>{activeAlbum.title}</Text>
-                  <Text style={styles.playlistCuratorText}>
-                    Album • Released in <Text style={styles.playlistCuratorHighlightText}>{activeAlbum.year}</Text>
-                  </Text>
-                  <Text style={styles.playlistTracksDurationCountText}>
-                    {activeAlbum.songs.length} tracks • {formatTime(activeAlbum.songs.length * 205)}
-                  </Text>
                 </View>
-              </View>
+              ) : null}
 
-              <View style={styles.playlistControlsRowContainer}>
-                <TouchableOpacity 
-                  style={[styles.playlistPlayCircularButton, activeAlbum.songs.length === 0 && { opacity: 0.5 }]} 
-                  onPress={() => activeAlbum.songs.length > 0 && playSong(activeAlbum.songs[0])}
-                  disabled={activeAlbum.songs.length === 0}
-                >
-                  <Text style={styles.playlistPlayIconArrowSymbol}>▶</Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity 
-                  style={styles.addSongBtn} 
-                  onPress={() => {
-                    setSongQuery("");
-                    setSongSuggestions([]);
-                    setModalError("");
-                    setShowAddSongModal(true);
-                  }}
-                >
-                  <Text style={styles.addSongBtnText}>+ Add Songs</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.playlistTracksListContainer}>
-                {activeAlbum.songs.length === 0 ? (
-                  <View style={styles.albumSongsPlaceholder}>
-                    <Text style={styles.albumPlaceholderIcon}>🎵</Text>
-                    <Text style={styles.albumPlaceholderText}>This album is empty.</Text>
-                    <TouchableOpacity 
-                      style={styles.albumPlaceholderBtn}
-                      onPress={() => {
-                        setSongQuery("");
-                        setSongSuggestions([]);
-                        setModalError("");
-                        setShowAddSongModal(true);
-                      }}
-                    >
-                      <Text style={styles.albumPlaceholderBtnText}>Add Some Tracks</Text>
+              {recentTracks.length > 0 ? (
+                <View style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Recently played</Text>
+                    <TouchableOpacity onPress={() => { setActiveTab("library"); setLibraryView("history"); }}>
+                      <Text style={styles.seeAll}>See all</Text>
                     </TouchableOpacity>
                   </View>
-                ) : (
-                  activeAlbum.songs.map((track, index) => (
-                    <View key={index} style={styles.albumTrackRow}>
-                      <TouchableOpacity 
-                        style={styles.albumTrackClickableArea}
-                        onPress={() => playSong(track)}
-                      >
-                        <Text style={styles.playlistTrackIndexNumberText}>{String(index + 1).padStart(2, '0')}</Text>
-                        <Image source={{ uri: track.thumbnail }} style={styles.playlistTrackThumbnailImage} />
-                        <View style={styles.playlistTrackMetaDetails}>
-                          <Text numberOfLines={1} style={styles.playlistTrackTitleLabelText}>{track.title}</Text>
-                          <Text numberOfLines={1} style={styles.playlistTrackArtistLabelText}>{track.artist}</Text>
-                        </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    {recentTracks.slice(0, 10).map((track) => (
+                      <TouchableOpacity key={trackKey(track)} style={styles.recentCard} onPress={() => playSong(track, recentTracks)}>
+                        <Cover uri={track.thumbnail} style={styles.recentArt} size={120} />
+                        <Text numberOfLines={1} style={styles.cardTitle}>{track.title}</Text>
+                        <Text numberOfLines={1} style={styles.cardMeta}>{track.artist}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity 
-                        style={styles.removeTrackBtn}
-                        onPress={() => handleRemoveSongFromAlbum(track.title)}
-                      >
-                        <Text style={styles.removeTrackBtnText}>🗑</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))
-                )}
-              </View>
-            </ScrollView>
-          ) : (
-            <>
-              {activeTab === 'home' && (
-                <ScrollView style={styles.scrollScreen} contentContainerStyle={{ paddingBottom: 120 }}>
-              {/* Artist Page - Screen 5 */}
-              <View style={styles.artistHeaderContainer}>
-                <Image source={{ uri: artist.banner }} style={styles.artistBannerImage} />
-                <View style={styles.artistBannerOverlay}>
-                  <TouchableOpacity style={styles.artistBackButton} onPress={() => setActiveTab('library')}>
-                    <Text style={styles.backButtonText}>❮</Text>
-                  </TouchableOpacity>
-                  <View style={styles.artistMetaInfo}>
-                    <Text style={styles.verifiedArtistText}>✓ VERIFIED ARTIST</Text>
-                    <Text style={styles.artistNameText}>{artist.name}</Text>
-                    <Text style={styles.listenersText}>{artist.listeners}</Text>
-                  </View>
-                  <TouchableOpacity style={styles.artistThreeDotsButton}>
-                    <Text style={styles.threeDotsText}>•••</Text>
-                  </TouchableOpacity>
+                    ))}
+                  </ScrollView>
                 </View>
+              ) : null}
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Recommended for you</Text>
+                {recsLoading ? <><SkeletonRow /><SkeletonRow /><SkeletonRow /></> : null}
+                {!recsLoading && recsError ? (
+                  <EmptyState icon={<RetryIcon size={28} color={COLORS.teal} />} title="Couldn't load recommendations" body="Check your connection and try again." actionLabel="Retry" onAction={fetchRecommendations} />
+                ) : null}
+                {!recsLoading && !recsError && recommendations.length === 0 ? (
+                  <EmptyState icon={<SearchIcon size={28} color={COLORS.teal} />} title="Nothing queued yet" body="Search for a song and we'll start building recommendations around what you play." actionLabel="Search" onAction={() => setActiveTab("search")} />
+                ) : null}
+                {!recsLoading && !recsError ? recommendations.slice(0, 8).map((track, index) => renderTrackRow(track, { index, list: recommendations })) : null}
               </View>
 
-              <View style={styles.screenPadding}>
-                {/* Popular Tracks Section */}
-                <Text style={styles.sectionHeaderTitle}>Popular Tracks</Text>
-                <View style={styles.popularTracksList}>
-                  {artist.popularTracks.map((track) => (
-                    <TouchableOpacity 
-                      key={track.id} 
-                      style={styles.popularTrackItem}
-                      onPress={() => playSong({ title: track.title, artist: track.artist, thumbnail: track.thumbnail, query: track.query })}
-                    >
-                      <Text style={styles.trackNumberIndex}>{track.id}</Text>
-                      <Image source={{ uri: track.thumbnail }} style={styles.trackThumbnailSmall} />
-                      <View style={styles.popularTrackDetails}>
-                        <Text numberOfLines={1} style={styles.trackTitleText}>{track.title}</Text>
-                        <Text numberOfLines={1} style={styles.trackPlaysText}>{track.plays}</Text>
-                      </View>
-                      <View style={styles.playIconContainerOutline}>
-                        <Text style={styles.playIconArrowSymbol}>▶</Text>
-                      </View>
+              {albums.length > 0 ? (
+                <View style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Your albums</Text>
+                    <TouchableOpacity onPress={() => { setActiveTab("library"); setLibraryView("root"); }}>
+                      <Text style={styles.seeAll}>See all</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    {albums.map((album) => (
+                      <TouchableOpacity key={album.id} style={styles.recentCard} onPress={() => openAlbum(album)}>
+                        <Cover uri={album.thumbnail} style={styles.recentArt} size={120} />
+                        <Text numberOfLines={1} style={styles.cardTitle}>{album.title}</Text>
+                        <Text style={styles.cardMeta}>{album.year}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              ) : null}
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Browse genres</Text>
+                <View style={styles.genreGrid}>
+                  {GENRES.map((genre) => (
+                    <TouchableOpacity key={genre.title} style={[styles.genreCard, { backgroundColor: genre.color }]} onPress={() => selectGenre(genre.title)}>
+                      <Text style={styles.genreTitle}>{genre.title}</Text>
+                      <Image source={{ uri: genre.thumb }} style={styles.genreThumb} />
                     </TouchableOpacity>
                   ))}
                 </View>
+              </View>
+            </ScrollView>
+          )}
 
-                {/* Albums Section */}
-                <View style={styles.albumsHeaderRow}>
-                  <Text style={styles.sectionHeaderTitle}>Albums</Text>
-                  <TouchableOpacity>
-                                      <Text style={styles.seeAllTextLink}>See All</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.createAlbumHeaderBtn} 
-                  onPress={() => {
-                    setNewAlbumTitle("");
-                    setNewAlbumYear("");
-                    setNewAlbumCover(ALBUM_PRESETS[0]);
-                    setModalError("");
-                    setShowCreateAlbumModal(true);
-                  }}
+          {activeTab === "search" && (
+            <View style={{ flex: 1 }}>
+              <View style={{ paddingHorizontal: 20, paddingTop: 16 }}>
+                <Text style={styles.pageTitle}>Search</Text>
+                <View style={styles.searchBar}>
+                  <SearchIcon size={16} color={COLORS.textMuted} />
+                  {ghostText ? (
+                    <Text style={styles.ghostText} pointerEvents="none" numberOfLines={1}>
+                      <Text style={{ color: "transparent" }}>{query}</Text>
+                      <Text style={{ color: "rgba(255,255,255,0.35)" }}>{ghostText.slice(query.length)}</Text>
+                    </Text>
+                  ) : null}
+                  <TextInput
+                    style={styles.searchInput}
+                    value={query}
+                    onChangeText={handleQueryChange}
+                    placeholder="Songs or artists"
+                    placeholderTextColor="#6b7280"
+                    onSubmitEditing={onSearchSubmit}
+                    accessibilityLabel="Search songs or artists"
+                    returnKeyType="search"
+                  />
+                  {query.length > 0 ? (
+                    <TouchableOpacity onPress={() => { setQuery(""); clearSuggestions(); }} accessibilityLabel="Clear search">
+                      <CloseIcon size={14} color={COLORS.textMuted} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </View>
+              <ScrollView contentContainerStyle={{ paddingBottom: bottomPad, paddingHorizontal: 20, paddingTop: 12 }}>
+                {searchLoading ? <><SkeletonRow /><SkeletonRow /><SkeletonRow /></> : null}
+                {!searchLoading && searchError ? (
+                  <EmptyState icon={<RetryIcon size={28} color={COLORS.teal} />} title="Search didn't go through" body="We couldn't reach results for that query." actionLabel="Retry" onAction={() => fetchSuggestions(query.trim())} />
+                ) : null}
+                {!searchLoading && !searchError && query.trim().length >= SUGGESTION_MIN_CHARS && suggestions.length === 0 ? (
+                  <EmptyState icon={<SearchIcon size={28} color={COLORS.teal} />} title={`No songs match “${query.trim()}”`} body="Try a different spelling, or search by artist name." />
+                ) : null}
+                {!searchLoading && suggestions.map((suggestion, index) => (
+                  <TouchableOpacity
+                    key={suggestion.id}
+                    style={[styles.trackRow, index === highlightedIndex && styles.trackRowActive]}
+                    onPress={() => playSuggestion(suggestion)}
+                  >
+                    <Cover uri={suggestion.thumbnail} style={styles.trackThumb} />
+                    <View style={styles.trackMeta}>
+                      <Text numberOfLines={1} style={styles.trackTitle}>{suggestion.title}</Text>
+                      <Text numberOfLines={1} style={styles.trackArtist}>{suggestion.artist}</Text>
+                    </View>
+                    {suggestion.duration ? <Text style={styles.duration}>{suggestion.duration}</Text> : null}
+                  </TouchableOpacity>
+                ))}
+                {!searchLoading && query.trim().length < SUGGESTION_MIN_CHARS ? (
+                  <>
+                    {recentTracks.length > 0 ? (
+                      <View style={styles.section}>
+                        <View style={styles.sectionHeader}>
+                          <Text style={styles.sectionTitle}>Recent searches</Text>
+                          <TouchableOpacity onPress={clearRecentTracks}><Text style={styles.seeAllTeal}>Clear all</Text></TouchableOpacity>
+                        </View>
+                        {recentTracks.slice(0, 8).map((track) => (
+                          <View key={trackKey(track)} style={styles.recentSearchRow}>
+                            <TouchableOpacity style={styles.trackRowMain} onPress={() => { setQuery(track.query); handleQueryChange(track.query); }}>
+                              <ClockIcon size={16} color={COLORS.textMuted} />
+                              <Text numberOfLines={1} style={[styles.trackTitle, { marginLeft: 12 }]}>{track.title}{track.artist ? ` · ${track.artist}` : ""}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => removeRecentTrack(track)} accessibilityLabel="Remove from history" style={styles.iconHit}>
+                              <CloseIcon size={14} color={COLORS.textMuted} />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                    <Text style={styles.sectionTitle}>Browse all genres</Text>
+                    <View style={styles.genreGrid}>
+                      {GENRES.map((genre) => (
+                        <TouchableOpacity key={genre.title} style={[styles.genreCard, { backgroundColor: genre.color }]} onPress={() => selectGenre(genre.title)}>
+                          <Text style={styles.genreTitle}>{genre.title}</Text>
+                          <Image source={{ uri: genre.thumb }} style={styles.genreThumb} />
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </>
+                ) : null}
+              </ScrollView>
+            </View>
+          )}
+
+          {activeTab === "library" && libraryView === "album" && activeAlbum && (
+            <ScrollView contentContainerStyle={{ paddingBottom: bottomPad, paddingHorizontal: 20, paddingTop: 16 }}>
+              <TouchableOpacity style={styles.backBtn} onPress={() => { setLibraryView("root"); setActiveAlbum(null); }} accessibilityLabel="Back to library">
+                <ChevronLeftIcon size={18} color={COLORS.textLight} />
+              </TouchableOpacity>
+              <View style={styles.albumHeader}>
+                <Cover uri={activeAlbum.thumbnail} style={styles.albumHero} size={160} />
+                <Text style={styles.pageTitle}>{activeAlbum.title}</Text>
+                <Text style={styles.pageSubtitle}>Album · {activeAlbum.year}</Text>
+                <Text style={styles.cardMeta}>{activeAlbum.songs.length} {activeAlbum.songs.length === 1 ? "track" : "tracks"}</Text>
+              </View>
+              <View style={styles.rowActions}>
+                <TouchableOpacity
+                  style={[styles.playCircle, activeAlbum.songs.length === 0 && { opacity: 0.4 }]}
+                  disabled={activeAlbum.songs.length === 0}
+                  onPress={() => playSong(activeAlbum.songs[0], activeAlbum.songs)}
+                  accessibilityLabel="Play album"
                 >
-                  <Text style={styles.createAlbumHeaderBtnText}>+ Create</Text>
+                  <PlayIcon size={20} color={COLORS.textDark} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.outlinePill} onPress={() => { setSongQuery(""); setSongSuggestions([]); setModalError(""); setShowAddSongModal(true); }}>
+                  <Text style={styles.outlinePillText}>Add songs</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setAlbumToDelete(activeAlbum)} accessibilityLabel="Delete album" style={styles.iconHit}>
+                  <TrashIcon size={18} color={COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
-              {artist.albums.length === 0 ? (
-                <View style={styles.albumPlaceholderContainer}>
-                  <Text style={styles.albumPlaceholderIcon}>💿</Text>
-                  <Text style={styles.albumPlaceholderText}>No albums created yet.</Text>
-                  <TouchableOpacity 
-                    style={styles.albumPlaceholderBtn}
-                    onPress={() => {
+              {activeAlbum.songs.length === 0 ? (
+                <EmptyState icon={<MusicIcon size={28} color={COLORS.teal} />} title="This album is empty" body="Add songs from search so you can play them in order." actionLabel="Add songs" onAction={() => setShowAddSongModal(true)} />
+              ) : activeAlbum.songs.map((track, index) => renderTrackRow(track, { index, list: activeAlbum.songs, onRemove: () => handleRemoveSongFromAlbum(track) }))}
+            </ScrollView>
+          )}
+
+          {activeTab === "library" && libraryView === "liked" && (
+            <ScrollView contentContainerStyle={{ paddingBottom: bottomPad, paddingHorizontal: 20, paddingTop: 16 }}>
+              <TouchableOpacity style={styles.backBtn} onPress={() => setLibraryView("root")} accessibilityLabel="Back to library">
+                <ChevronLeftIcon size={18} color={COLORS.textLight} />
+              </TouchableOpacity>
+              <Text style={styles.pageTitle}>Liked songs</Text>
+              {likedTracks.length === 0 ? (
+                <EmptyState icon={<HeartIcon size={28} color={COLORS.teal} />} title="No liked songs yet" body="Tap the heart on a track while it's playing to save it here." />
+              ) : (
+                <>
+                  <TouchableOpacity style={[styles.playCircle, { marginVertical: 16 }]} onPress={() => playSong(likedTracks[0], likedTracks)} accessibilityLabel="Play liked songs">
+                    <PlayIcon size={20} color={COLORS.textDark} />
+                  </TouchableOpacity>
+                  {likedTracks.map((track, index) => renderTrackRow(track, { index, list: likedTracks }))}
+                </>
+              )}
+            </ScrollView>
+          )}
+
+          {activeTab === "library" && libraryView === "history" && (
+            <ScrollView contentContainerStyle={{ paddingBottom: bottomPad, paddingHorizontal: 20, paddingTop: 16 }}>
+              <TouchableOpacity style={styles.backBtn} onPress={() => setLibraryView("root")} accessibilityLabel="Back to library">
+                <ChevronLeftIcon size={18} color={COLORS.textLight} />
+              </TouchableOpacity>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.pageTitle}>Recently played</Text>
+                {recentTracks.length > 0 ? (
+                  <TouchableOpacity onPress={clearRecentTracks}><Text style={styles.seeAllTeal}>Clear all</Text></TouchableOpacity>
+                ) : null}
+              </View>
+              {recentTracks.length === 0 ? (
+                <EmptyState icon={<ClockIcon size={28} color={COLORS.teal} />} title="No listening history" body="Songs you play will show up here." />
+              ) : recentTracks.map((track, index) => renderTrackRow(track, { index, list: recentTracks, onRemove: () => removeRecentTrack(track) }))}
+            </ScrollView>
+          )}
+
+          {activeTab === "library" && libraryView === "root" && (
+            <ScrollView contentContainerStyle={{ paddingBottom: bottomPad, paddingHorizontal: 20, paddingTop: 16 }}>
+              <Text style={styles.pageTitle}>Your library</Text>
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Liked songs</Text>
+                  {likedTracks.length > 0 ? (
+                    <TouchableOpacity onPress={() => setLibraryView("liked")}><Text style={styles.seeAll}>See all</Text></TouchableOpacity>
+                  ) : null}
+                </View>
+                {likedTracks.length === 0 ? (
+                  <Text style={styles.pageSubtitle}>Hearts you tap while listening are saved here.</Text>
+                ) : likedTracks.slice(0, 5).map((track, index) => renderTrackRow(track, { index, list: likedTracks }))}
+              </View>
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Albums</Text>
+                  <TouchableOpacity
+                    style={styles.createPill}
+                    onPress={() =>
+                    {
                       setNewAlbumTitle("");
                       setNewAlbumYear("");
                       setNewAlbumCover(ALBUM_PRESETS[0]);
@@ -1065,1614 +1762,460 @@ export default function App() {
                       setShowCreateAlbumModal(true);
                     }}
                   >
-                    <Text style={styles.albumPlaceholderBtnText}>Create Album</Text>
+                    <PlusIcon size={14} color={COLORS.textDark} />
+                    <Text style={styles.createPillText}>Create</Text>
                   </TouchableOpacity>
                 </View>
-              ) : (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalAlbumsScroll}>
-                                      {artist.albums.map((album, idx) => (
-                      <TouchableOpacity key={idx} style={styles.albumCardItem} onPress={() => setActiveAlbum(album)}>
-                        <Image source={{ uri: album.thumbnail }} style={styles.albumCoverImage} />
-                        <Text numberOfLines={1} style={styles.albumTitleText}>{album.title}</Text>
-                        <Text style={styles.albumYearText}>{album.year}</Text>
-                      </TouchableOpacity>
-                    ))}
-                </ScrollView>
-              )}
-            </View>
-          </ScrollView>
-          )}
-
-          {activeTab === 'search' && (
-            <View style={styles.searchScreenRoot}>
-              <View style={styles.searchHeaderWrapper}>
-                <Text style={styles.searchPageLargeTitle}>Search</Text>
-                
-                {/* Search Bar - Screen 2 */}
-                <View style={styles.searchBarWrapperContainer}>
-                  <Text style={styles.searchGlassIcon}>🔍</Text>
-                  
-                  {/* Ghost text for predictive search autocomplete */}
-                  {ghostText ? (
-                    <Text style={styles.ghostText} pointerEvents="none" numberOfLines={1}>
-                      <Text style={{ color: 'transparent' }}>{query}</Text>
-                      <Text style={{ color: 'rgba(255, 255, 255, 0.35)' }}>{ghostText.slice(query.length)}</Text>
-                    </Text>
-                  ) : null}
-
-                  <TextInput
-                    style={[styles.searchBarTextInputField, { backgroundColor: 'transparent' }]}
-                    value={query}
-                    onChangeText={handleQueryChange}
-                    placeholder="Artists, songs, or podcasts"
-                    placeholderTextColor="#6b7280"
-                    onSubmitEditing={onSearchSubmit}
-                    onKeyPress={(e) => onSearchKeyPress(e.nativeEvent.key)}
-                    blurOnSubmit={false}
-                  />
-                  {ghostText ? (
-                    <TouchableOpacity 
-                      style={styles.autocompleteBtn}
-                      onPress={() => {
-                        setQuery(ghostText);
-                        handleQueryChange(ghostText);
-                      }}
-                    >
-                      <Text style={styles.autocompleteBtnText}>⇥</Text>
-                    </TouchableOpacity>
-                  ) : null}
-                  {query.length > 0 && (
-                    <TouchableOpacity onPress={() => { setQuery(""); clearSuggestions(); }}>
-                      <Text style={styles.searchClearIconText}>✕</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-
-              <ScrollView style={styles.searchScrollableBody} contentContainerStyle={{ paddingBottom: 140 }}>
-                {suggestions.length > 0 ? (
-                  /* Suggestions list */
-                  <View style={styles.searchSuggestionsListContainer}>
-                    {suggestions.map((s, index) => (
-                      <TouchableOpacity
-                        key={s.id}
-                        onPress={() => playSuggestion(s)}
-                        style={[
-                          styles.suggestionRowItem,
-                          index === highlightedIndex && styles.suggestionItemHighlighted,
-                        ]}
-                      >
-                        {s.thumbnail ? (
-                          <Image source={{ uri: s.thumbnail }} style={styles.suggestionThumbnailImage} />
-                        ) : (
-                          <View style={[styles.suggestionThumbnailImage, styles.placeholderArtworkBackground]} />
-                        )}
-                        <View style={styles.suggestionTextContainer}>
-                          {renderHighlighted(s.title, query, styles.suggestionTitleTextLabel, styles.suggestionBoldTextHighlight)}
-                          {renderHighlighted(s.artist, query, styles.suggestionArtistTextLabel, styles.suggestionBoldTextHighlight)}
-                        </View>
-                        {s.duration ? (
-                          <Text style={styles.suggestionDurationText}>{s.duration}</Text>
-                        ) : null}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                {albums.length === 0 ? (
+                  <EmptyState icon={<DiscIcon size={28} color={COLORS.teal} />} title="No albums yet" body="Create an album and add songs you want to keep together." actionLabel="Create album" onAction={() => setShowCreateAlbumModal(true)} />
                 ) : (
-                  /* Browse all genres grid - Screen 2 */
-                  <View style={styles.screenPadding}>
-                    {query.trim().length === 0 && recentSongs.length > 0 && (
-                      <View style={styles.recentSearchesContainer}>
-                        <View style={styles.recentSearchesHeaderRow}>
-                          <Text style={styles.recentSearchesTitle}>Recent Searches</Text>
-                          <TouchableOpacity onPress={() => { setRecentSongs([]); AsyncStorage.removeItem('recentSongs'); }}>
-                            <Text style={styles.clearAllHistoryText}>Clear All</Text>
-                          </TouchableOpacity>
-                        </View>
-                        <View style={styles.recentSearchesList}>
-                          {recentSongs.map((song, idx) => (
-                            <View key={idx} style={styles.recentSearchItemRow}>
-                              <TouchableOpacity 
-                                style={styles.recentSearchTextClickable}
-                                onPress={() => {
-                                  setQuery(song);
-                                  handleQueryChange(song);
-                                }}
-                              >
-                                <Text style={styles.recentSearchHistoryIcon}>🕒</Text>
-                                <Text numberOfLines={1} style={styles.recentSearchText}>{song}</Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity 
-                                style={styles.removeRecentItemBtn}
-                                onPress={() => removeRecentSong(song)}
-                              >
-                                <Text style={styles.removeRecentItemSymbol}>✕</Text>
-                              </TouchableOpacity>
-                            </View>
-                          ))}
-                        </View>
-                      </View>
-                    )}
-
-                    <Text style={styles.browseAllGenresTitle}>Browse all genres</Text>
-                    <View style={styles.genresGridContainer}>
-                      {[
-                        { title: "Synthwave", color: COLORS.cardGradients.synthwave, thumb: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150" },
-                        { title: "Lo-Fi Beats", color: COLORS.cardGradients.lofi, thumb: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=150" },
-                        { title: "Techno & Club", color: COLORS.cardGradients.techno, thumb: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=150" },
-                        { title: "Indie Rock", color: COLORS.cardGradients.indie, thumb: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150" },
-                        { title: "Hip-Hop", color: COLORS.cardGradients.hiphop, thumb: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150" },
-                        { title: "Chill Ambient", color: COLORS.cardGradients.ambient, thumb: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=150" },
-                      ].map((genre, idx) => (
-                        <TouchableOpacity 
-                          key={idx} 
-                          style={[styles.genreCardItemContainer, { backgroundColor: genre.color[0] }]}
-                          onPress={() => selectGenre(genre.title)}
-                        >
-                          <Text style={styles.genreCardTitleLabel}>{genre.title}</Text>
-                          <View style={styles.genreCoverArtRotatedPeekContainer}>
-                            <Image source={{ uri: genre.thumb }} style={styles.genreCoverArtRotatedPeekImage} />
-                          </View>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
+                  <View style={styles.albumGrid}>
+                    {albums.map((album) => (
+                      <TouchableOpacity key={album.id} style={styles.albumGridItem} onPress={() => openAlbum(album)}>
+                        <Cover uri={album.thumbnail} style={styles.albumGridArt} size={160} />
+                        <Text numberOfLines={1} style={styles.cardTitle}>{album.title}</Text>
+                        <Text style={styles.cardMeta}>{album.songs.length} tracks · {album.year}</Text>
+                      </TouchableOpacity>
+                    ))}
                   </View>
                 )}
-              </ScrollView>
-            </View>
-          )}
-
-          {activeTab === 'library' && (
-            <ScrollView style={styles.scrollScreen} contentContainerStyle={{ paddingBottom: 120 }}>
-              {/* Library Screen - Screen 1 (Playlist details) */}
-              <View style={styles.playlistHeaderContainer}>
-                <Image 
-                  source={{ uri: currentSong?.thumbnail || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400" }} 
-                  style={styles.playlistCoverArtBig} 
-                />
-                <View style={styles.playlistDetailsMetadataContainer}>
-                  <TouchableOpacity style={styles.playlistBackButton} onPress={() => setActiveTab('home')}>
-                    <Text style={styles.backButtonText}>❮</Text>
-                  </TouchableOpacity>
-                  <Text numberOfLines={2} style={styles.playlistBigTitleHeader}>Cyberpunk Essentials</Text>
-                  <Text style={styles.playlistCuratorText}>
-                    Curated by <Text style={styles.playlistCuratorHighlightText}>Waveline</Text>
-                  </Text>
-                  <Text style={styles.playlistTracksDurationCountText}>
-                    {libraryTracks.length} tracks • {formatTime(libraryTracks.length * 205)}
-                  </Text>
-                </View>
               </View>
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Recently played</Text>
+                  {recentTracks.length > 0 ? (
+                    <TouchableOpacity onPress={() => setLibraryView("history")}><Text style={styles.seeAll}>See all</Text></TouchableOpacity>
+                  ) : null}
+                </View>
+                {recentTracks.length === 0 ? (
+                  <Text style={styles.pageSubtitle}>Your last plays will land here.</Text>
+                ) : recentTracks.slice(0, 5).map((track, index) => renderTrackRow(track, { index, list: recentTracks }))}
+              </View>
+            </ScrollView>
+          )}
+        </View>
 
-              <View style={styles.playlistControlsRowContainer}>
-                <TouchableOpacity style={styles.playlistPlayCircularButton} onPress={() => playSong(libraryTracks[0])}>
-                  <Text style={styles.playlistPlayIconArrowSymbol}>▶</Text>
+        {currentSong && !showFullPlayer ? (
+          <TouchableOpacity style={[styles.miniPlayer, { bottom: tabBarHeight }]} onPress={() => setShowFullPlayer(true)} activeOpacity={0.9}>
+            <View>
+              <Cover uri={currentSong.thumbnail} style={styles.miniArt} />
+              {isBusy ? (
+                <View style={styles.busyOverlay}><ActivityIndicator color="#fff" size="small" /></View>
+              ) : null}
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text numberOfLines={1} style={styles.trackTitle}>{displaySong?.title}</Text>
+              <Text numberOfLines={1} style={styles.trackArtist}>
+                {playStatus === "error" ? "Could not play this track" : displaySong?.artist || playerStatusLabel}
+              </Text>
+            </View>
+            {playStatus === "error" ? (
+              <TouchableOpacity onPress={() => playSong(asTrack(currentSong, lastQueryRef.current))} accessibilityLabel="Retry" style={styles.iconHit}>
+                <RetryIcon size={18} color={COLORS.teal} />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPress={togglePlayback} accessibilityLabel={isPlaying ? "Pause" : "Play"} style={styles.iconHit}>
+                {isPlaying ? <PauseIcon size={18} color={COLORS.teal} /> : <PlayIcon size={18} color={COLORS.teal} />}
+              </TouchableOpacity>
+            )}
+          </TouchableOpacity>
+        ) : null}
+
+        <View style={[styles.tabBar, { height: tabBarHeight, paddingBottom: insets.bottom }]}>
+          {[
+            { id: "home" as const, label: "Home", icon: HomeIcon, action: goHome },
+            { id: "search" as const, label: "Search", icon: SearchIcon, action: () => { setActiveTab("search"); setActiveAlbum(null); } },
+            { id: "library" as const, label: "Library", icon: LibraryIcon, action: () => { setActiveTab("library"); setLibraryView("root"); setActiveAlbum(null); clearSuggestions(); } },
+          ].map((item) =>
+          {
+            const active = activeTab === item.id;
+            const Icon = item.icon;
+            return (
+              <TouchableOpacity key={item.id} style={styles.tabItem} onPress={item.action} accessibilityLabel={item.label}>
+                <Icon size={20} color={active ? COLORS.teal : COLORS.textMuted} />
+                <Text style={[styles.tabLabel, active && { color: COLORS.teal }]}>{item.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <Modal visible={showFullPlayer} animationType="slide" onRequestClose={() => setShowFullPlayer(false)}>
+          <SafeAreaView style={styles.fullPlayer}>
+            <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
+            <View style={styles.fullHeader}>
+              <TouchableOpacity onPress={() => setShowFullPlayer(false)} accessibilityLabel="Close now playing" style={styles.iconHit}>
+                <ChevronDownIcon size={22} color={COLORS.textLight} />
+              </TouchableOpacity>
+              <Text style={styles.nowPlayingLabel}>{showLyrics ? "LYRICS" : "NOW PLAYING"}</Text>
+              <View style={styles.fullHeaderActions}>
+                <TouchableOpacity
+                  onPress={() => setShowLyrics(!showLyrics)}
+                  accessibilityLabel={showLyrics ? "Hide lyrics" : "Show lyrics"}
+                  style={styles.iconHit}
+                >
+                  <LyricsIcon size={20} color={showLyrics ? COLORS.teal : COLORS.textLight} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowQueue(true)} accessibilityLabel="Queue" style={styles.iconHit}>
+                  <QueueIcon size={20} color={COLORS.textLight} />
                 </TouchableOpacity>
               </View>
-
-              <View style={styles.playlistTracksListContainer}>
-                {libraryTracks.map((track, index) => (
-                  <TouchableOpacity 
-                    key={index} 
-                    style={styles.playlistTrackRowItem}
-                    onPress={() => playSong({ title: track.title, artist: track.artist, thumbnail: track.thumbnail, query: track.query })}
+            </View>
+            {showLyrics ? (
+              <View style={styles.lyricsWrap}>
+                {lyricsLoading ? (
+                  <View style={styles.lyricsEmpty}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={styles.lyricsEmptyText}>Finding lyrics</Text>
+                  </View>
+                ) : lyrics?.status === "instrumental" ? (
+                  <View style={styles.lyricsEmpty}>
+                    <Text style={styles.lyricsEmptyText}>This track is instrumental.</Text>
+                  </View>
+                ) : lyrics?.status === "ok" && lyrics.lines.length > 0 ? (
+                  <ScrollView
+                    ref={lyricsScrollRef}
+                    style={styles.lyricsScroll}
+                    contentContainerStyle={styles.lyricsContent}
+                    showsVerticalScrollIndicator={false}
+                    onScrollBeginDrag={markLyricsUserScroll}
+                    onMomentumScrollBegin={markLyricsUserScroll}
                   >
-                    <Text style={styles.playlistTrackIndexNumberText}>{String(index + 1).padStart(2, '0')}</Text>
-                    <Image source={{ uri: track.thumbnail }} style={styles.playlistTrackThumbnailImage} />
-                    <View style={styles.playlistTrackMetaDetails}>
-                      <Text numberOfLines={1} style={styles.playlistTrackTitleLabelText}>{track.title}</Text>
-                      <Text numberOfLines={1} style={styles.playlistTrackArtistLabelText}>{track.artist}</Text>
+                    {lyrics.lines.map((line, index) =>
+                    {
+                      const active = lyrics.synced && index === lyricIndex;
+                      const past = lyrics.synced && index < lyricIndex;
+                      return (
+                        <TouchableOpacity
+                          key={`${index}-${line.time}-${line.text}`}
+                          activeOpacity={lyrics.synced ? 0.7 : 1}
+                          onPress={() => lyrics.synced && seekToLyric(line.time)}
+                          onLayout={(event) => { lyricLineYRef.current[index] = event.nativeEvent.layout.y; }}
+                          disabled={!lyrics.synced}
+                        >
+                          <Text
+                            style={[
+                              styles.lyricLine,
+                              !lyrics.synced && styles.lyricLinePlain,
+                              past && styles.lyricLinePast,
+                              active && styles.lyricLineActive,
+                            ]}
+                          >
+                            {typeof line.text === "string" ? line.text : ""}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                ) : (
+                  <View style={styles.lyricsEmpty}>
+                    <Text style={styles.lyricsEmptyText}>Lyrics are not available for this track.</Text>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <View style={styles.artworkWrap}>
+                <Cover uri={currentSong?.thumbnail} style={styles.fullArt} size={280} />
+                {isBusy ? (
+                  <View style={[styles.busyOverlay, { borderRadius: 16 }]}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={styles.busyLabel}>{playerStatusLabel}</Text>
+                  </View>
+                ) : null}
+              </View>
+            )}
+            <View style={styles.fullMeta}>
+              <View style={{ flex: 1, marginRight: 16 }}>
+                <Text numberOfLines={1} style={styles.fullTitle}>{displaySong?.title}</Text>
+                <Text numberOfLines={1} style={styles.fullArtist}>{displaySong?.artist || "ZIZO Music"}</Text>
+              </View>
+              <TouchableOpacity onPress={() => currentSong && toggleLike(currentSong)} accessibilityLabel={currentLiked ? "Unlike" : "Like"}>
+                <HeartIcon size={22} color={currentLiked ? COLORS.teal : COLORS.textMuted} filled={currentLiked} />
+              </TouchableOpacity>
+            </View>
+            {playStatus === "error" ? (
+              <View style={styles.errorBanner}>
+                <Text style={styles.errorText}>Couldn't play this track.</Text>
+                <TouchableOpacity onPress={() => currentSong && playSong(asTrack(currentSong, lastQueryRef.current))}>
+                  <Text style={styles.seeAllTeal}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            <View style={styles.seekWrap}>
+              <View
+                style={styles.sliderHit}
+                onLayout={(event) => { sliderWidthRef.current = event.nativeEvent.layout.width; }}
+                onStartShouldSetResponder={() => true}
+                onMoveShouldSetResponder={() => true}
+                onResponderGrant={onSliderGrant}
+                onResponderMove={onSliderMove}
+                onResponderRelease={onSliderRelease}
+                accessibilityLabel="Seek"
+              >
+                <View style={styles.sliderTrack}>
+                  <View style={[styles.sliderFill, { width: `${sliderRatio * 100}%` }]} />
+                  <View style={[styles.sliderThumb, { left: `${sliderRatio * 100}%` }]} />
+                </View>
+              </View>
+              <View style={styles.timeRow}>
+                <Text style={styles.timeText}>{formatTime(displayedPosition)}</Text>
+                <Text style={styles.timeText}>{formatTime(progress.duration)}</Text>
+              </View>
+            </View>
+            <View style={styles.controlsRow}>
+              <TouchableOpacity onPress={toggleShuffle} accessibilityLabel="Shuffle">
+                <ShuffleIcon size={20} color={isShuffled ? COLORS.teal : COLORS.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={skipPrevious} accessibilityLabel="Previous" disabled={!canSkipPrev && displayedPosition <= 3}>
+                <SkipPrevIcon size={24} color={COLORS.textLight} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.playCircleLarge}
+                onPress={playStatus === "error" && currentSong ? () => playSong(asTrack(currentSong, lastQueryRef.current)) : togglePlayback}
+                accessibilityLabel={isPlaying ? "Pause" : "Play"}
+              >
+                {playStatus === "error" ? <RetryIcon size={26} color={COLORS.textDark} /> : isBusy ? <ActivityIndicator color={COLORS.textDark} /> : isPlaying ? <PauseIcon size={28} color={COLORS.textDark} /> : <PlayIcon size={28} color={COLORS.textDark} />}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={skipNext} accessibilityLabel="Next" disabled={!canSkipNext}>
+                <SkipNextIcon size={24} color={canSkipNext ? COLORS.textLight : "#444"} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={toggleLoop} accessibilityLabel="Repeat">
+                <RepeatIcon size={20} color={isLooping ? COLORS.teal : COLORS.textMuted} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.volumeRow}>
+              <VolumeIcon size={16} color={COLORS.textMuted} isMuted={volume === 0} />
+              <View
+                style={styles.sliderHitFlex}
+                onLayout={(event) => { volumeSliderWidthRef.current = event.nativeEvent.layout.width; }}
+                onStartShouldSetResponder={() => true}
+                onMoveShouldSetResponder={() => true}
+                onResponderGrant={onVolumeGrant}
+                onResponderMove={onVolumeGrant}
+                accessibilityLabel="Volume"
+              >
+                <View style={styles.volumeTrack}>
+                  <View style={[styles.volumeFill, { width: `${volume * 100}%` }]} />
+                  <View style={[styles.volumeThumb, { left: `${volume * 100}%` }]} />
+                </View>
+              </View>
+            </View>
+          </SafeAreaView>
+        </Modal>
+
+        <Modal visible={showQueue} animationType="slide" transparent onRequestClose={() => setShowQueue(false)}>
+          <View style={styles.sheetOverlay}>
+            <View style={styles.sheet}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Up next</Text>
+                <TouchableOpacity onPress={() => setShowQueue(false)} accessibilityLabel="Close queue">
+                  <CloseIcon size={18} color={COLORS.textLight} />
+                </TouchableOpacity>
+              </View>
+              {currentSong ? (
+                <>
+                  <Text style={styles.kicker}>Playing</Text>
+                  {renderTrackRow(asTrack(currentSong, lastQueryRef.current))}
+                </>
+              ) : null}
+              {upcomingTracks().length === 0 ? (
+                <Text style={[styles.pageSubtitle, { textAlign: "center", marginTop: 24 }]}>Nothing else in the queue. Play a list or keep autoplay on for recommendations.</Text>
+              ) : upcomingTracks().map((track, index) => renderTrackRow(track, { index, list: playList.length ? playList : recommendations }))}
+            </View>
+          </View>
+        </Modal>
+
+        <Modal visible={showAddSongModal} animationType="slide" transparent onRequestClose={() => setShowAddSongModal(false)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Add song to album</Text>
+              {modalError ? <Text style={styles.modalError}>{modalError}</Text> : null}
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Search title or artist"
+                placeholderTextColor={COLORS.textMuted}
+                value={songQuery}
+                onChangeText={handleSongQueryChange}
+                autoFocus
+              />
+              <ScrollView style={{ maxHeight: 240 }}>
+                {(songSuggestions.length > 0 ? songSuggestions : recommendations.slice(0, 4)).map((item, index) => (
+                  <TouchableOpacity key={index} style={styles.addRow} onPress={() => handleAddSongToAlbum(item as any)}>
+                    <Cover uri={item.thumbnail} style={styles.addThumb} />
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={1} style={styles.trackTitle}>{item.title}</Text>
+                      <Text numberOfLines={1} style={styles.trackArtist}>{item.artist}</Text>
                     </View>
-                    <TouchableOpacity style={styles.playlistTrackMoreOptionsButton}>
-                      <Text style={styles.playlistTrackMoreOptionsBurgerSymbol}>☰</Text>
-                    </TouchableOpacity>
+                    <PlusIcon size={16} color={COLORS.teal} />
                   </TouchableOpacity>
                 ))}
-              </View>
-            </ScrollView>
-          )}
-          </>
-        )}
-        </View>
-
-        {/* Floating Mini Player Bar */}
-        {currentSong && !showFullPlayer && (
-          <TouchableOpacity style={styles.miniPlayerBarContainer} onPress={() => setShowFullPlayer(true)}>
-            <Image source={{ uri: currentSong.thumbnail }} style={styles.miniPlayerArtworkImage} />
-            <View style={styles.miniPlayerDetailsContainer}>
-              <Text numberOfLines={1} style={styles.miniPlayerSongTitleText}>{currentSong.title}</Text>
-              <Text numberOfLines={1} style={styles.miniPlayerSongArtistText}>{currentSong.artist}</Text>
+              </ScrollView>
+              <TouchableOpacity onPress={() => setShowAddSongModal(false)}><Text style={styles.modalCancel}>Close</Text></TouchableOpacity>
             </View>
-            <TouchableOpacity onPress={togglePlayback} style={styles.miniPlayerPlayPauseButton}>
-              <Text style={styles.miniPlayerPlayPauseIconSymbol}>
-                {(playbackState.state === State.Playing) ? "‖" : "▶"}
-              </Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        )}
+          </View>
+        </Modal>
 
-        {/* Custom Tab Bar - Screens 1, 2, 5 */}
-        <View style={styles.bottomNavigationTabBarContainer}>
-          <TouchableOpacity 
-            style={styles.navigationTabItemButton} 
-            onPress={() => { setActiveTab('home'); clearSuggestions(); setActiveAlbum(null); }}
-          >
-            <Text style={[styles.navigationTabItemIcon, activeTab === 'home' && styles.navigationTabItemIconActive]}>⌂</Text>
-            <Text style={[styles.navigationTabItemLabel, activeTab === 'home' && styles.navigationTabItemLabelActive]}>Home</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.navigationTabItemButton} 
-            onPress={() => { setActiveTab('search'); setActiveAlbum(null); }}
-          >
-            <Text style={[styles.navigationTabItemIcon, activeTab === 'search' && styles.navigationTabItemIconActive]}>🔍</Text>
-            <Text style={[styles.navigationTabItemLabel, activeTab === 'search' && styles.navigationTabItemLabelActive]}>Search</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.navigationTabItemButton} 
-            onPress={() => { setActiveTab('library'); clearSuggestions(); setActiveAlbum(null); }}
-          >
-            <Text style={[styles.navigationTabItemIcon, activeTab === 'library' && styles.navigationTabItemIconActive]}>⊗</Text>
-            <Text style={[styles.navigationTabItemLabel, activeTab === 'library' && styles.navigationTabItemLabelActive]}>Library</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Full-Screen Now Playing Page (Screen 4) */}
-        {currentSong && (
-          <Modal
-            visible={showFullPlayer}
-            animationType="slide"
-            transparent={false}
-            onRequestClose={() => setShowFullPlayer(false)}
-          >
-            <SafeAreaView style={styles.fullPlayerScreenRoot}>
-              <StatusBar barStyle="light-content" backgroundColor="#070708" />
-              
-              {/* Header */}
-              <View style={styles.fullPlayerHeaderRowContainer}>
-                <TouchableOpacity style={styles.fullPlayerChevronDownButton} onPress={() => setShowFullPlayer(false)}>
-                  <Text style={styles.fullPlayerChevronDownSymbol}>▼</Text>
-                </TouchableOpacity>
-                <Text style={styles.fullPlayerHeaderTitleText}>NOW PLAYING</Text>
-                <TouchableOpacity style={styles.fullPlayerHeaderBurgerMenuButton}>
-                  <Text style={styles.fullPlayerHeaderBurgerMenuSymbol}>☰</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Large Cover Art with Cyan Glow Shadow */}
-              <View style={styles.fullPlayerArtworkGlowContainer}>
-                <Image source={{ uri: currentSong.thumbnail }} style={styles.fullPlayerArtworkBigImage} />
-              </View>
-
-              {/* Song Information & Like Button */}
-              <View style={styles.fullPlayerSongDetailsRowContainer}>
-                <View style={styles.fullPlayerSongTextWrapper}>
-                  <Text numberOfLines={1} style={styles.fullPlayerSongTitleText}>{currentSong.title}</Text>
-                  <Text numberOfLines={1} style={styles.fullPlayerSongArtistText}>{currentSong.artist}</Text>
-                </View>
-                <TouchableOpacity onPress={() => toggleLike(currentSong.title)} style={styles.fullPlayerLikeHeartButton}>
-                  <Text style={[styles.fullPlayerHeartIconSymbol, likedTracks.has(currentSong.title) && styles.fullPlayerHeartIconActive]}>
-                    {likedTracks.has(currentSong.title) ? "♥" : "♡"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Seek Slider Bar Progress */}
-              <View style={styles.fullPlayerSeekSliderContainer}>
-                <View
-                  style={styles.fullPlayerSeekSliderHitbox}
-                  onLayout={(event) => {
-                    sliderWidthRef.current = event.nativeEvent.layout.width;
-                  }}
-                  onStartShouldSetResponder={() => true}
-                  onMoveShouldSetResponder={() => true}
-                  onResponderGrant={onSliderGrant}
-                  onResponderMove={onSliderMove}
-                  onResponderRelease={onSliderRelease}
-                >
-                  <View style={styles.fullPlayerSeekSliderTrackBar}>
-                    <View style={[styles.fullPlayerSeekSliderFillBar, { width: `${sliderRatio * 100}%` }]} />
-                    <View style={[styles.fullPlayerSeekSliderThumbCircle, { left: `${sliderRatio * 100}%` }]} />
-                  </View>
-                </View>
-                <View style={styles.fullPlayerTimeIndicatorsRow}>
-                  <Text style={styles.fullPlayerTimeLabelText}>{formatTime(displayedPosition)}</Text>
-                  <Text style={styles.fullPlayerTimeLabelText}>{formatTime(progress.duration)}</Text>
-                </View>
-              </View>
-
-              {/* Playback Controls Row */}
-              <View style={styles.fullPlayerPlaybackControlsRow}>
-                <TouchableOpacity onPress={() => setIsShuffled(!isShuffled)} style={styles.fullPlayerSecondaryControlBtn}>
-                  <Text style={[styles.fullPlayerControlBtnSymbol, isShuffled && styles.fullPlayerControlBtnActive]}>🔀</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity onPress={skipPrevious} style={styles.fullPlayerPrimaryControlBtn}>
-                  <Text style={styles.fullPlayerControlBtnSymbol}>⏮</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity onPress={togglePlayback} style={styles.fullPlayerCircularPlayPauseGradientButton}>
-                  <Text style={styles.fullPlayerCircularPlayPauseTextSymbol}>
-                    {(playbackState.state === State.Playing) ? "‖" : "▶"}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity onPress={skipNext} style={styles.fullPlayerPrimaryControlBtn}>
-                  <Text style={styles.fullPlayerControlBtnSymbol}>⏭</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity onPress={toggleLoop} style={styles.fullPlayerSecondaryControlBtn}>
-                  <Text style={[styles.fullPlayerControlBtnSymbol, isLooping && styles.fullPlayerControlBtnActive]}>🔁</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Volume Slider & Lyric/Queue Trigger Row */}
-              <View style={styles.fullPlayerVolumeRowContainer}>
-                <Text style={styles.fullPlayerVolumeSpeakerIconSymbol}>🔊</Text>
-                <View
-                  style={styles.fullPlayerVolumeSliderHitbox}
-                  onLayout={(event) => {
-                    volumeSliderWidthRef.current = event.nativeEvent.layout.width;
-                  }}
-                  onStartShouldSetResponder={() => true}
-                  onMoveShouldSetResponder={() => true}
-                  onResponderGrant={onVolumeGrant}
-                  onResponderMove={onVolumeMove}
-                >
-                  <View style={styles.fullPlayerVolumeSliderTrackBar}>
-                    <View style={[styles.fullPlayerVolumeSliderFillBar, { width: `${volume * 100}%` }]} />
-                    <View style={[styles.fullPlayerVolumeSliderThumbCircle, { left: `${volume * 100}%` }]} />
-                  </View>
-                </View>
-                <TouchableOpacity style={styles.fullPlayerLyricsListTriggerButton}>
-                  <Text style={styles.fullPlayerLyricsListSymbol}>☰</Text>
-                </TouchableOpacity>
-              </View>
-
-            </SafeAreaView>
-          </Modal>
-        )}
-      </SafeAreaView>
-      
-      {/* Add Song Modal */}
-      <Modal
-        visible={showAddSongModal}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShowAddSongModal(false)}
-      >
-        <View style={styles.createAlbumModalOverlay}>
-          <View style={styles.createAlbumModalContainer}>
-            <Text style={styles.createAlbumModalTitle}>Add Song to Album</Text>
-            
-            {modalError ? <Text style={styles.modalErrorText}>{modalError}</Text> : null}
-            
-            <Text style={styles.inputLabel}>Search Song Title or Artist</Text>
-            <TextInput
-              style={styles.modalTextInput}
-              placeholder="e.g. Blinding Lights"
-              placeholderTextColor={COLORS.textMuted}
-              value={songQuery}
-              onChangeText={handleSongQueryChange}
-              autoFocus={true}
-            />
-
-            <Text style={styles.inputLabel}>Suggestions</Text>
-            <ScrollView style={styles.suggestionsListScroll} contentContainerStyle={{ paddingBottom: 10 }}>
-              {songSuggestions.length === 0 ? (
-                songQuery.trim().length >= SUGGESTION_MIN_CHARS ? (
-                  <Text style={styles.noSuggestionsText}>No songs found.</Text>
-                ) : (
-                  <View style={styles.quickAddContainer}>
-                    <Text style={styles.noSuggestionsText}>Start typing to search, or quick add recommendations:</Text>
-                    {recommendations.slice(0, 4).map((rec, idx) => (
-                      <TouchableOpacity 
-                        key={idx}
-                        style={styles.quickAddRow}
-                        onPress={() => handleAddSongToAlbum(rec)}
-                      >
-                        <Image source={{ uri: rec.thumbnail }} style={styles.quickAddThumb} />
-                        <View style={{ flex: 1 }}>
-                          <Text numberOfLines={1} style={styles.quickAddTitle}>{rec.title}</Text>
-                          <Text numberOfLines={1} style={styles.quickAddArtist}>{rec.artist}</Text>
-                        </View>
-                        <Text style={styles.quickAddPlus}>+</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )
-              ) : (
-                songSuggestions.map((s, idx) => (
-                  <TouchableOpacity 
-                    key={idx} 
-                    style={styles.suggestionSearchItem}
-                    onPress={() => handleAddSongToAlbum(s)}
-                  >
-                    <Image source={{ uri: s.thumbnail }} style={styles.suggestionSearchThumb} />
-                    <View style={{ flex: 1 }}>
-                      <Text numberOfLines={1} style={styles.suggestionSearchTitle}>{s.title}</Text>
-                      <Text numberOfLines={1} style={styles.suggestionSearchArtist}>{s.artist}</Text>
-                    </View>
-                    <Text style={styles.suggestionAddBtnSymbol}>+</Text>
+        <Modal visible={showCreateAlbumModal} animationType="slide" transparent onRequestClose={() => setShowCreateAlbumModal(false)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Create album</Text>
+              {modalError ? <Text style={styles.modalError}>{modalError}</Text> : null}
+              <Text style={styles.inputLabel}>Album title</Text>
+              <TextInput style={styles.modalInput} placeholder="e.g. Night drives" placeholderTextColor={COLORS.textMuted} value={newAlbumTitle} onChangeText={setNewAlbumTitle} />
+              <Text style={styles.inputLabel}>Year</Text>
+              <TextInput style={styles.modalInput} placeholder={new Date().getFullYear().toString()} placeholderTextColor={COLORS.textMuted} value={newAlbumYear} onChangeText={setNewAlbumYear} keyboardType="numeric" />
+              <Text style={styles.inputLabel}>Cover</Text>
+              <ScrollView horizontal>
+                {ALBUM_PRESETS.map((preset) => (
+                  <TouchableOpacity key={preset} onPress={() => setNewAlbumCover(preset)} style={[styles.preset, newAlbumCover === preset && styles.presetSelected]}>
+                    <Image source={{ uri: preset }} style={styles.presetImage} />
                   </TouchableOpacity>
-                ))
-              )}
-            </ScrollView>
-
-            <View style={styles.modalButtonsRow}>
-              <TouchableOpacity 
-                style={styles.modalCancelBtn} 
-                onPress={() => setShowAddSongModal(false)}
-              >
-                <Text style={styles.modalCancelBtnText}>Close</Text>
-              </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TextInput style={styles.modalInput} placeholder="Or paste a cover image URL" placeholderTextColor={COLORS.textMuted} value={ALBUM_PRESETS.includes(newAlbumCover) ? "" : newAlbumCover} onChangeText={setNewAlbumCover} />
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.modalGhost} onPress={() => setShowCreateAlbumModal(false)}><Text style={styles.modalCancel}>Cancel</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.primaryPill} onPress={handleCreateAlbum}><Text style={styles.primaryPillText}>Save</Text></TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
 
-      {/* Create Album Modal */}
-      <Modal
-        visible={showCreateAlbumModal}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShowCreateAlbumModal(false)}
-      >
-        <View style={styles.createAlbumModalOverlay}>
-          <View style={styles.createAlbumModalContainer}>
-            <Text style={styles.createAlbumModalTitle}>Create New Album</Text>
-            
-            {modalError ? <Text style={styles.modalErrorText}>{modalError}</Text> : null}
-            
-            <Text style={styles.inputLabel}>Album Title</Text>
-            <TextInput
-              style={styles.modalTextInput}
-              placeholder="e.g. Synthwave Dreams"
-              placeholderTextColor={COLORS.textMuted}
-              value={newAlbumTitle}
-              onChangeText={setNewAlbumTitle}
-            />
-            
-            <Text style={styles.inputLabel}>Release Year</Text>
-            <TextInput
-              style={styles.modalTextInput}
-              placeholder="e.g. 2026"
-              placeholderTextColor={COLORS.textMuted}
-              value={newAlbumYear}
-              onChangeText={setNewAlbumYear}
-              keyboardType="numeric"
-            />
-            
-            <Text style={styles.inputLabel}>Select Cover Art Preset</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.presetCoverScroll}>
-              {ALBUM_PRESETS.map((preset, idx) => (
-                <TouchableOpacity
-                  key={idx}
-                  onPress={() => setNewAlbumCover(preset)}
-                  style={[
-                    styles.presetCoverTouch,
-                    newAlbumCover === preset && styles.presetCoverTouchSelected
-                  ]}
-                >
-                  <Image source={{ uri: preset }} style={styles.presetCoverImage} />
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-            
-            <Text style={styles.inputLabel}>Or paste cover image URL</Text>
-            <TextInput
-              style={styles.modalTextInput}
-              placeholder="https://example.com/image.jpg"
-              placeholderTextColor={COLORS.textMuted}
-              value={newAlbumCover}
-              onChangeText={setNewAlbumCover}
-            />
-            
-            <View style={styles.modalButtonsRow}>
-              <TouchableOpacity 
-                style={styles.modalCancelBtn} 
-                onPress={() => setShowCreateAlbumModal(false)}
-              >
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.modalSaveBtn} 
-                onPress={handleCreateAlbum}
-              >
-                <Text style={styles.modalSaveBtnText}>Save</Text>
-              </TouchableOpacity>
+        <Modal visible={!!albumToDelete} transparent animationType="fade" onRequestClose={() => setAlbumToDelete(null)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Delete album?</Text>
+              <Text style={[styles.pageSubtitle, { textAlign: "center" }]}>
+                “{albumToDelete?.title}” and its track list will be removed from this device. This cannot be undone.
+              </Text>
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.modalGhost} onPress={() => setAlbumToDelete(null)}><Text style={styles.modalCancel}>Cancel</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.deletePill} onPress={confirmDeleteAlbum}><Text style={styles.deletePillText}>Delete</Text></TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
-    </SafeAreaProvider>
+        </Modal>
+      </SafeAreaView>
   );
 }
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  scrollScreen: {
-    flex: 1,
-  },
-  screenPadding: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-  },
-  tabContentContainer: {
-    flex: 1,
-  },
-
-  /* Artist Profile Banner Screen (Home tab) */
-  artistHeaderContainer: {
-    width: '100%',
-    height: SCREEN_HEIGHT * 0.32,
-    position: 'relative',
-  },
-  artistBannerImage: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  artistBannerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    justifyContent: 'space-between',
-    padding: 20,
-    paddingTop: 16,
-  },
-  artistBackButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playlistBackButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  backButtonText: {
-    color: COLORS.textLight,
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  artistMetaInfo: {
-    marginBottom: 4,
-  },
-  verifiedArtistText: {
-    color: COLORS.teal,
-    fontSize: 11,
-    fontWeight: 'bold',
-    letterSpacing: 1.2,
-  },
-  artistNameText: {
-    color: COLORS.textLight,
-    fontSize: 32,
-    fontWeight: 'bold',
-    marginVertical: 4,
-  },
-  listenersText: {
-    color: '#e5e7eb',
-    fontSize: 13.5,
-  },
-  artistThreeDotsButton: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  threeDotsText: {
-    color: COLORS.textLight,
-    fontSize: 12,
-    letterSpacing: 1.5,
-  },
-
-  /* Playlist View Screen (Library tab) */
-  playlistHeaderContainer: {
-    width: '100%',
-    flexDirection: 'row',
-    padding: 20,
-    paddingTop: 24,
-    gap: 16,
-  },
-  playlistCoverArtBig: {
-    width: 140,
-    height: 140,
-    borderRadius: 12,
-    backgroundColor: COLORS.surface,
-  },
-  playlistDetailsMetadataContainer: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  playlistBigTitleHeader: {
-    color: COLORS.textLight,
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  playlistCuratorText: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-    marginBottom: 4,
-  },
-  playlistCuratorHighlightText: {
-    color: COLORS.cyan,
-    fontWeight: '500',
-  },
-  playlistTracksDurationCountText: {
-    color: COLORS.textMuted,
-    fontSize: 13,
-  },
-  playlistControlsRowContainer: {
-    paddingHorizontal: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  playlistPlayCircularButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playlistPlayIconArrowSymbol: {
-    color: COLORS.teal,
-    fontSize: 18,
-    marginLeft: 3,
-  },
-  playlistTracksListContainer: {
-    paddingHorizontal: 20,
-  },
-  playlistTrackRowItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  playlistTrackIndexNumberText: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-    marginRight: 16,
-    width: 20,
-    textAlign: 'center',
-  },
-  playlistTrackThumbnailImage: {
-    width: 46,
-    height: 46,
-    borderRadius: 6,
-    backgroundColor: COLORS.surface,
-    marginRight: 14,
-  },
-  playlistTrackMetaDetails: {
-    flex: 1,
-  },
-  playlistTrackTitleLabelText: {
-    color: COLORS.textLight,
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  playlistTrackArtistLabelText: {
-    color: COLORS.textMuted,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  playlistTrackMoreOptionsButton: {
-    padding: 8,
-  },
-  playlistTrackMoreOptionsBurgerSymbol: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-  },
-
-  /* Search Screen (Search Tab) */
-  searchScreenRoot: {
-    flex: 1,
-  },
-  searchHeaderWrapper: {
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 12,
-  },
-  searchPageLargeTitle: {
-    color: COLORS.textLight,
-    fontSize: 32,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  searchBarWrapperContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#16161a',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 48,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  searchGlassIcon: {
-    color: '#6b7280',
-    fontSize: 16,
-    marginRight: 10,
-  },
-  searchBarTextInputField: {
-    flex: 1,
-    color: COLORS.textLight,
-    fontSize: 15.5,
-    height: '100%',
-    padding: 0,
-  },
-  searchClearIconText: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-    marginLeft: 6,
-    padding: 4,
-  },
-  searchScrollableBody: {
-    flex: 1,
-  },
-  browseAllGenresTitle: {
-    color: COLORS.textLight,
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  genresGridContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  genreCardItemContainer: {
-    width: (SCREEN_WIDTH - 52) / 2,
-    height: 110,
-    borderRadius: 12,
-    padding: 16,
-    position: 'relative',
-    overflow: 'hidden',
-    marginBottom: 4,
-  },
-  genreCardTitleLabel: {
-    color: COLORS.textLight,
-    fontSize: 16.5,
-    fontWeight: 'bold',
-  },
-  genreCoverArtRotatedPeekContainer: {
-    position: 'absolute',
-    bottom: -15,
-    right: -15,
-    width: 72,
-    height: 72,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  genreCoverArtRotatedPeekImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 6,
-    transform: [{ rotate: '25deg' }],
-  },
-
-  /* Search Suggestions */
-  searchSuggestionsListContainer: {
-    paddingHorizontal: 20,
-    marginTop: 8,
-  },
-  suggestionRowItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    gap: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.03)',
-  },
-  suggestionItemHighlighted: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  suggestionThumbnailImage: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-  },
-  placeholderArtworkBackground: {
-    backgroundColor: COLORS.surface,
-  },
-  suggestionTextContainer: {
-    flex: 1,
-  },
-  suggestionTitleTextLabel: {
-    color: '#d4d4d8',
-    fontSize: 14.5,
-  },
-  suggestionArtistTextLabel: {
-    color: COLORS.textMuted,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  suggestionBoldTextHighlight: {
-    fontWeight: 'bold',
-    color: COLORS.textLight,
-  },
-  suggestionDurationText: {
-    color: '#52525b',
-    fontSize: 12,
-  },
-
-  /* Section Title Elements */
-  sectionHeaderTitle: {
-    color: COLORS.textLight,
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  seeAllTextLink: {
-    color: COLORS.textMuted,
-    fontSize: 13,
-  },
-
-  /* Popular Tracks layout */
-  popularTracksList: {
-    marginBottom: 24,
-  },
-  popularTrackItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#101012',
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.03)',
-  },
-  trackNumberIndex: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-    width: 24,
-    textAlign: 'center',
-    marginRight: 10,
-  },
-  trackThumbnailSmall: {
-    width: 44,
-    height: 44,
-    borderRadius: 6,
-    backgroundColor: COLORS.surface,
-    marginRight: 14,
-  },
-  popularTrackDetails: {
-    flex: 1,
-  },
-  trackTitleText: {
-    color: COLORS.textLight,
-    fontSize: 14.5,
-    fontWeight: '500',
-  },
-  trackPlaysText: {
-    color: COLORS.textMuted,
-    fontSize: 11.5,
-    marginTop: 2,
-  },
-  playIconContainerOutline: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playIconArrowSymbol: {
-    color: COLORS.textLight,
-    fontSize: 10,
-    marginLeft: 1.5,
-  },
-
-  /* Album Cards list */
-  albumsHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  horizontalAlbumsScroll: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  albumCardItem: {
-    width: 120,
-    marginRight: 16,
-  },
-  albumCoverImage: {
-    width: 120,
-    height: 120,
-    borderRadius: 10,
-    backgroundColor: COLORS.surface,
-    marginBottom: 8,
-  },
-  albumTitleText: {
-    color: COLORS.textLight,
-    fontSize: 13.5,
-    fontWeight: '500',
-  },
-  albumYearText: {
-    color: COLORS.textMuted,
-    fontSize: 11.5,
-    marginTop: 2,
-  },
-
-  /* Floating Mini Player Styles */
-  miniPlayerBarContainer: {
-    position: 'absolute',
-    bottom: 64, // Just above bottom tab bar
-    left: 12,
-    right: 12,
-    height: 58,
-    borderRadius: 12,
-    backgroundColor: '#111115',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-    zIndex: 50,
-  },
-  miniPlayerArtworkImage: {
-    width: 40,
-    height: 40,
-    borderRadius: 6,
-    backgroundColor: COLORS.surface,
-  },
-  miniPlayerDetailsContainer: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  miniPlayerSongTitleText: {
-    color: COLORS.textLight,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  miniPlayerSongArtistText: {
-    color: COLORS.textMuted,
-    fontSize: 12,
-    marginTop: 1,
-  },
-  miniPlayerPlayPauseButton: {
-    padding: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  miniPlayerPlayPauseIconSymbol: {
-    color: COLORS.teal,
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-
-  /* Bottom Tab Navigation Bar */
-  bottomNavigationTabBarContainer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 60,
-    backgroundColor: '#0a0a0d',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.05)',
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    paddingBottom: 6,
-    zIndex: 40,
-  },
-  navigationTabItemButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 70,
-    height: '100%',
-  },
-  navigationTabItemIcon: {
-    color: COLORS.textMuted,
-    fontSize: 22,
-  },
-  navigationTabItemIconActive: {
-    color: COLORS.teal,
-  },
-  navigationTabItemLabel: {
-    color: COLORS.textMuted,
-    fontSize: 10,
-    marginTop: 2,
-  },
-  navigationTabItemLabelActive: {
-    color: COLORS.teal,
-    fontWeight: '500',
-  },
-
-  /* Full Screen Now Playing - Screen 4 */
-  fullPlayerScreenRoot: {
-    flex: 1,
-    backgroundColor: '#070708',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-  },
-  fullPlayerHeaderRowContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    height: 56,
-  },
-  fullPlayerChevronDownButton: {
-    padding: 8,
-  },
-  fullPlayerChevronDownSymbol: {
-    color: COLORS.textLight,
-    fontSize: 16,
-  },
-  fullPlayerHeaderTitleText: {
-    color: COLORS.textLight,
-    fontSize: 11,
-    fontWeight: 'bold',
-    letterSpacing: 2,
-  },
-  fullPlayerHeaderBurgerMenuButton: {
-    padding: 8,
-  },
-  fullPlayerHeaderBurgerMenuSymbol: {
-    color: COLORS.textLight,
-    fontSize: 16,
-  },
-  fullPlayerArtworkGlowContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: SCREEN_HEIGHT * 0.02,
-    shadowColor: COLORS.cyan,
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.45,
-    shadowRadius: 28,
-    elevation: 24,
-  },
-  fullPlayerArtworkBigImage: {
-    width: SCREEN_WIDTH * 0.8,
-    height: SCREEN_WIDTH * 0.8,
-    borderRadius: 16,
-    backgroundColor: COLORS.surface,
-  },
-  fullPlayerSongDetailsRowContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 32,
-    marginVertical: 12,
-  },
-  fullPlayerSongTextWrapper: {
-    flex: 1,
-    marginRight: 16,
-  },
-  fullPlayerSongTitleText: {
-    color: COLORS.textLight,
-    fontSize: 22,
-    fontWeight: 'bold',
-  },
-  fullPlayerSongArtistText: {
-    color: COLORS.cyan,
-    fontSize: 14,
-    marginTop: 4,
-    fontWeight: '500',
-  },
-  fullPlayerLikeHeartButton: {
-    padding: 8,
-  },
-  fullPlayerHeartIconSymbol: {
-    color: COLORS.textMuted,
-    fontSize: 24,
-  },
-  fullPlayerHeartIconActive: {
-    color: COLORS.cyan,
-  },
-
-  /* Custom Touch Seeker Slider */
-  fullPlayerSeekSliderContainer: {
-    paddingHorizontal: 32,
-    marginVertical: 8,
-  },
-  fullPlayerSeekSliderHitbox: {
-    width: '100%',
-    paddingVertical: 12,
-  },
-  fullPlayerSeekSliderTrackBar: {
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 2,
-    position: 'relative',
-  },
-  fullPlayerSeekSliderFillBar: {
-    height: '100%',
-    backgroundColor: COLORS.teal, // Accent color matching gradient fill request
-    borderRadius: 2,
-  },
-  fullPlayerSeekSliderThumbCircle: {
-    position: 'absolute',
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: COLORS.textLight,
-    top: -4,
-    marginLeft: -6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  fullPlayerTimeIndicatorsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  fullPlayerTimeLabelText: {
-    color: COLORS.textMuted,
-    fontSize: 12.5,
-  },
-
-  /* Playback Controls Row */
-  fullPlayerPlaybackControlsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 32,
-    marginVertical: 12,
-  },
-  fullPlayerPrimaryControlBtn: {
-    padding: 10,
-  },
-  fullPlayerSecondaryControlBtn: {
-    padding: 10,
-  },
-  fullPlayerControlBtnSymbol: {
-    color: COLORS.textMuted,
-    fontSize: 22,
-  },
-  fullPlayerControlBtnActive: {
-    color: COLORS.cyan,
-  },
-  fullPlayerCircularPlayPauseGradientButton: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: COLORS.teal,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: COLORS.teal,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 10,
-  },
-  fullPlayerCircularPlayPauseTextSymbol: {
-    color: COLORS.textDark,
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginLeft: 2.5,
-  },
-
-  /* Volume Row Slider */
-  fullPlayerVolumeRowContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 32,
-    marginVertical: 16,
-    gap: 12,
-  },
-  fullPlayerVolumeSpeakerIconSymbol: {
-    color: COLORS.textMuted,
-    fontSize: 16,
-  },
-  fullPlayerVolumeSliderHitbox: {
-    flex: 1,
-    paddingVertical: 10,
-  },
-  fullPlayerVolumeSliderTrackBar: {
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 1.5,
-    position: 'relative',
-  },
-  fullPlayerVolumeSliderFillBar: {
-    height: '100%',
-    backgroundColor: COLORS.cyan,
-    borderRadius: 1.5,
-  },
-  fullPlayerVolumeSliderThumbCircle: {
-    position: 'absolute',
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: COLORS.textLight,
-    top: -3.5,
-    marginLeft: -5,
-  },
-  fullPlayerLyricsListTriggerButton: {
-    padding: 8,
-  },
-  fullPlayerLyricsListSymbol: {
-    color: COLORS.textMuted,
-    fontSize: 16,
-  },
-
-  /* Create Album Header Button */
-  createAlbumHeaderBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.cyan,
-    backgroundColor: 'rgba(169, 248, 251, 0.05)',
-  },
-  createAlbumHeaderBtnText: {
-    color: COLORS.teal,
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-
-  /* Empty State Placeholder styling */
-  albumPlaceholderContainer: {
-    padding: 24,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    backgroundColor: '#0c0c0e',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 10,
-    marginHorizontal: 4,
-  },
-  albumPlaceholderIcon: {
-    fontSize: 32,
-    marginBottom: 8,
-  },
-  albumPlaceholderText: {
-    color: COLORS.textMuted,
-    fontSize: 13,
-    marginBottom: 12,
-  },
-  albumPlaceholderBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: COLORS.teal,
-  },
-  albumPlaceholderBtnText: {
-    color: COLORS.textDark,
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-
-  /* Create Album Modal overlay styling */
-  createAlbumModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  createAlbumModalContainer: {
-    width: '100%',
-    maxWidth: 360,
-    backgroundColor: '#121214',
-    borderRadius: 20,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  createAlbumModalTitle: {
-    color: COLORS.textLight,
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  modalErrorText: {
-    color: '#ef4444',
-    fontSize: 12,
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  inputLabel: {
-    color: COLORS.lavender,
-    fontSize: 12,
-    fontWeight: 'bold',
-    marginBottom: 6,
-    marginTop: 10,
-  },
-  modalTextInput: {
-    backgroundColor: '#1c1c1f',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    color: '#ffffff',
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  presetCoverScroll: {
-    flexDirection: 'row',
-    marginVertical: 4,
-  },
-  presetCoverTouch: {
-    marginRight: 10,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: 'transparent',
-    overflow: 'hidden',
-  },
-  presetCoverTouchSelected: {
-    borderColor: COLORS.teal,
-  },
-  presetCoverImage: {
-    width: 60,
-    height: 60,
-  },
-  modalButtonsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 24,
-    gap: 12,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    backgroundColor: '#1c1c1f',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  modalCancelBtnText: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  modalSaveBtn: {
-    flex: 1,
-    backgroundColor: COLORS.teal,
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-    shadowColor: COLORS.teal,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-      modalSaveBtnText: {
-      color: COLORS.textDark,
-      fontSize: 14,
-      fontWeight: 'bold',
-    },
-
-    /* Album Song Management styling */
-    addSongBtn: {
-      paddingVertical: 8,
-      paddingHorizontal: 16,
-      borderRadius: 20,
-      borderWidth: 1,
-      borderColor: COLORS.cyan,
-      backgroundColor: 'rgba(169, 248, 251, 0.05)',
-      marginLeft: 16,
-    },
-    addSongBtnText: {
-      color: COLORS.teal,
-      fontSize: 13,
-      fontWeight: 'bold',
-    },
-    albumSongsPlaceholder: {
-      padding: 30,
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginTop: 20,
-    },
-    albumTrackRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingVertical: 10,
-      borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255, 255, 255, 0.05)',
-    },
-    albumTrackClickableArea: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-    removeTrackBtn: {
-      padding: 10,
-      justifyContent: 'center',
-      alignItems: 'center',
-    },
-    removeTrackBtnText: {
-      color: '#ef4444',
-      fontSize: 16,
-    },
-
-    /* Add Song picker suggestion items styling */
-    suggestionsListScroll: {
-      maxHeight: 240,
-      marginTop: 6,
-    },
-    noSuggestionsText: {
-      color: COLORS.textMuted,
-      fontSize: 12,
-      textAlign: 'center',
-      marginVertical: 16,
-      paddingHorizontal: 10,
-    },
-    quickAddContainer: {
-      gap: 8,
-    },
-    quickAddRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: '#1c1c1f',
-      padding: 8,
-      borderRadius: 8,
-      gap: 10,
-    },
-    quickAddThumb: {
-      width: 36,
-      height: 36,
-      borderRadius: 4,
-    },
-    quickAddTitle: {
-      color: '#ffffff',
-      fontSize: 13,
-      fontWeight: '500',
-    },
-    quickAddArtist: {
-      color: COLORS.textMuted,
-      fontSize: 11,
-    },
-    quickAddPlus: {
-      color: COLORS.teal,
-      fontSize: 18,
-      paddingHorizontal: 8,
-      fontWeight: 'bold',
-    },
-    suggestionSearchItem: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: '#1c1c1f',
-      padding: 10,
-      borderRadius: 8,
-      marginVertical: 4,
-      gap: 12,
-    },
-    suggestionSearchThumb: {
-      width: 40,
-      height: 40,
-      borderRadius: 4,
-    },
-    suggestionSearchTitle: {
-      color: '#ffffff',
-      fontSize: 14,
-      fontWeight: '500',
-    },
-    suggestionSearchArtist: {
-      color: COLORS.textMuted,
-      fontSize: 12,
-    },
-      suggestionAddBtnSymbol: {
-    color: COLORS.teal,
-    fontSize: 20,
-    paddingHorizontal: 8,
-    fontWeight: 'bold',
-  },
-
-  /* Recent Searches Styles */
-  recentSearchesContainer: {
-    marginBottom: 24,
-    paddingTop: 10,
-  },
-  recentSearchesHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  recentSearchesTitle: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  clearAllHistoryText: {
-    color: COLORS.teal,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  recentSearchesList: {
-    gap: 8,
-  },
-  recentSearchItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  recentSearchTextClickable: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  recentSearchHistoryIcon: {
-    color: COLORS.textMuted,
-    fontSize: 14,
-  },
-  recentSearchText: {
-    color: '#e5e7eb',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  removeRecentItemBtn: {
-    padding: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  removeRecentItemSymbol: {
-    color: COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-
-  /* Autocomplete Predictive Styles */
-  ghostText: {
-    position: 'absolute',
-    left: 38,
-    right: 48,
-    fontSize: 15.5,
-    color: 'transparent',
-    height: 48,
-    lineHeight: 48,
-    padding: 0,
-  },
-  autocompleteBtn: {
-    padding: 4,
-    marginRight: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  autocompleteBtnText: {
-    color: COLORS.teal,
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
+  container: { flex: 1, backgroundColor: COLORS.background },
+  tabContentContainer: { flex: 1 },
+  scrollScreen: { flex: 1 },
+  wordmark: { color: COLORS.textLight, fontSize: 16, fontWeight: "600", marginBottom: 18 },
+  pageTitle: { color: COLORS.textLight, fontSize: 32, fontWeight: "700", letterSpacing: -0.6 },
+  pageSubtitle: { color: COLORS.textMuted, fontSize: 14, marginTop: 6, marginBottom: 8 },
+  section: { marginTop: 28 },
+  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  sectionTitle: { color: COLORS.textLight, fontSize: 18, fontWeight: "700", marginBottom: 12 },
+  seeAll: { color: COLORS.textMuted, fontSize: 14 },
+  seeAllTeal: { color: COLORS.teal, fontSize: 14, fontWeight: "600" },
+  continueCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: "#101012", borderWidth: 1, borderColor: "rgba(255,255,255,0.06)", borderRadius: 16, padding: 12 },
+  continueArt: { width: 72, height: 72, borderRadius: 12, backgroundColor: COLORS.surface },
+  trackTitleLarge: { color: COLORS.textLight, fontSize: 16, fontWeight: "600" },
+  playCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: COLORS.teal, alignItems: "center", justifyContent: "center" },
+  playCircleLarge: { width: 68, height: 68, borderRadius: 34, backgroundColor: COLORS.teal, alignItems: "center", justifyContent: "center" },
+  recentCard: { width: 120, marginRight: 12 },
+  recentArt: { width: 120, height: 120, borderRadius: 12, backgroundColor: COLORS.surface, marginBottom: 8 },
+  cardTitle: { color: COLORS.textLight, fontSize: 12, fontWeight: "600" },
+  cardMeta: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
+  trackRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 4, borderRadius: 12 },
+  trackRowActive: { backgroundColor: "rgba(255,255,255,0.08)" },
+  trackRowMain: { flex: 1, flexDirection: "row", alignItems: "center", minWidth: 0 },
+  trackIndex: { width: 28, textAlign: "center", color: COLORS.textMuted, fontSize: 12 },
+  trackThumb: { width: 44, height: 44, borderRadius: 8, backgroundColor: COLORS.surface, marginRight: 12 },
+  trackMeta: { flex: 1, minWidth: 0 },
+  trackTitle: { color: COLORS.textLight, fontSize: 14, fontWeight: "500" },
+  trackArtist: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
+  duration: { color: "#52525b", fontSize: 12 },
+  iconHit: { padding: 10, minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  coverFallback: { backgroundColor: COLORS.surface, alignItems: "center", justifyContent: "center" },
+  emptyState: { alignItems: "center", paddingVertical: 28, paddingHorizontal: 16, borderWidth: 1, borderStyle: "dashed", borderColor: "rgba(255,255,255,0.1)", borderRadius: 16, backgroundColor: "#101012" },
+  emptyTitle: { color: COLORS.textLight, fontSize: 14, fontWeight: "600" },
+  emptyBody: { color: COLORS.textMuted, fontSize: 13, textAlign: "center", marginTop: 6, maxWidth: 280 },
+  primaryPill: { marginTop: 14, backgroundColor: COLORS.teal, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, alignItems: "center" },
+  primaryPillText: { color: COLORS.textDark, fontWeight: "700", fontSize: 13 },
+  skeletonRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10 },
+  skeletonArt: { width: 44, height: 44, borderRadius: 8, backgroundColor: "#24242c" },
+  skeletonLine: { height: 10, borderRadius: 4, backgroundColor: "#24242c" },
+  genreGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 12 },
+  genreCard: { width: (SCREEN_WIDTH - 52) / 2, height: 96, borderRadius: 16, padding: 14, overflow: "hidden" },
+  genreTitle: { color: "#fff", fontSize: 14, fontWeight: "700" },
+  genreThumb: { position: "absolute", width: 56, height: 56, borderRadius: 6, right: -8, bottom: -8, transform: [{ rotate: "25deg" }] },
+  searchBar: { flexDirection: "row", alignItems: "center", backgroundColor: "#16161a", borderRadius: 12, paddingHorizontal: 12, height: 48, borderWidth: 1, borderColor: "rgba(255,255,255,0.06)", marginTop: 16, gap: 10 },
+  searchInput: { flex: 1, color: COLORS.textLight, fontSize: 15, height: "100%", padding: 0 },
+  ghostText: { position: "absolute", left: 38, right: 36, fontSize: 15, height: 48, lineHeight: 48 },
+  recentSearchRow: { flexDirection: "row", alignItems: "center" },
+  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.06)", alignItems: "center", justifyContent: "center", marginBottom: 16 },
+  albumHeader: { alignItems: "center", gap: 6, marginBottom: 16 },
+  albumHero: { width: 160, height: 160, borderRadius: 16, backgroundColor: COLORS.surface, marginBottom: 8 },
+  rowActions: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
+  outlinePill: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1, borderColor: "rgba(129,247,229,0.4)" },
+  outlinePillText: { color: COLORS.teal, fontWeight: "700", fontSize: 13 },
+  createPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: COLORS.teal, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
+  createPillText: { color: COLORS.textDark, fontWeight: "700", fontSize: 12 },
+  albumGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
+  albumGridItem: { width: (SCREEN_WIDTH - 52) / 2, marginBottom: 16 },
+  albumGridArt: { width: "100%", aspectRatio: 1, borderRadius: 12, backgroundColor: COLORS.surface, marginBottom: 8 },
+  miniPlayer: { position: "absolute", left: 12, right: 12, bottom: 64, height: 72, borderRadius: 16, backgroundColor: "#111115", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", flexDirection: "row", alignItems: "center", paddingHorizontal: 12, zIndex: 50 },
+  miniArt: { width: 48, height: 48, borderRadius: 8, backgroundColor: COLORS.surface },
+  busyOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", borderRadius: 8 },
+  busyLabel: { color: "#fff", fontSize: 12, marginTop: 8 },
+  tabBar: { position: "absolute", left: 0, right: 0, bottom: 0, height: 64, backgroundColor: "#0a0a0d", borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.05)", flexDirection: "row", justifyContent: "space-around", alignItems: "center", zIndex: 40 },
+  tabItem: { alignItems: "center", justifyContent: "center", width: 80, height: "100%", gap: 2 },
+  tabLabel: { color: COLORS.textMuted, fontSize: 11 },
+  fullPlayer: { flex: 1, backgroundColor: COLORS.background, justifyContent: "space-between", paddingVertical: 8 },
+  fullHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, height: 56 },
+  fullHeaderActions: { flexDirection: "row", alignItems: "center" },
+  nowPlayingLabel: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 2 },
+  artworkWrap: { alignItems: "center", justifyContent: "center" },
+  lyricsWrap: { flex: 1, width: "100%", paddingHorizontal: 24, minHeight: 180 },
+  lyricsScroll: { flex: 1 },
+  lyricsContent: { paddingVertical: 32, paddingBottom: 48 },
+  lyricsEmpty: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 16 },
+  lyricsEmptyText: { color: COLORS.textMuted, textAlign: "center", fontSize: 14, marginTop: 10 },
+  lyricLine: { color: "rgba(255,255,255,0.34)", fontSize: 22, fontWeight: "700", lineHeight: 30, paddingVertical: 8 },
+  lyricLineActive: { color: "#ffffff", fontSize: 24, lineHeight: 32 },
+  lyricLinePast: { color: "rgba(255,255,255,0.22)" },
+  lyricLinePlain: { fontSize: 16, fontWeight: "500", color: "rgba(255,255,255,0.78)", lineHeight: 24 },
+  fullArt: { width: SCREEN_WIDTH * 0.72, height: SCREEN_WIDTH * 0.72, borderRadius: 16, backgroundColor: COLORS.surface },
+  fullMeta: { flexDirection: "row", alignItems: "center", paddingHorizontal: 32 },
+  fullTitle: { color: COLORS.textLight, fontSize: 22, fontWeight: "700" },
+  fullArtist: { color: COLORS.teal, fontSize: 14, marginTop: 4, fontWeight: "500" },
+  errorBanner: { marginHorizontal: 32, flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 10, borderRadius: 12, backgroundColor: "rgba(239,68,68,0.12)", borderWidth: 1, borderColor: "rgba(239,68,68,0.25)" },
+  errorText: { color: "#fca5a5", fontSize: 12 },
+  seekWrap: { paddingHorizontal: 32 },
+  sliderHit: { width: "100%", paddingVertical: 12 },
+  sliderHitFlex: { flex: 1, paddingVertical: 12 },
+  sliderTrack: { height: 4, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 2, position: "relative" },
+  sliderFill: { height: "100%", backgroundColor: COLORS.teal, borderRadius: 2 },
+  sliderThumb: { position: "absolute", width: 12, height: 12, borderRadius: 6, backgroundColor: "#fff", top: -4, marginLeft: -6 },
+  timeRow: { flexDirection: "row", justifyContent: "space-between" },
+  timeText: { color: COLORS.textMuted, fontSize: 12, fontVariant: ["tabular-nums"] },
+  controlsRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 32 },
+  volumeRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 32, gap: 12, marginBottom: 16 },
+  volumeTrack: { height: 3, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 2, position: "relative" },
+  volumeFill: { height: "100%", backgroundColor: COLORS.cyan, borderRadius: 2 },
+  volumeThumb: { position: "absolute", width: 10, height: 10, borderRadius: 5, backgroundColor: "#fff", top: -3.5, marginLeft: -5 },
+  sheetOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
+  sheet: { backgroundColor: COLORS.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "70%" },
+  kicker: { color: COLORS.textMuted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", alignItems: "center", justifyContent: "center", padding: 20 },
+  modalCard: { width: "100%", maxWidth: 360, backgroundColor: COLORS.surface, borderRadius: 24, padding: 20, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  modalTitle: { color: COLORS.textLight, fontSize: 18, fontWeight: "700", textAlign: "center", marginBottom: 12 },
+  modalError: { color: "#f87171", fontSize: 12, textAlign: "center", marginBottom: 8 },
+  inputLabel: { color: COLORS.lavender, fontSize: 11, fontWeight: "700", letterSpacing: 0.6, textTransform: "uppercase", marginTop: 10, marginBottom: 6 },
+  modalInput: { backgroundColor: COLORS.surfaceLight, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, color: "#fff", fontSize: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.05)", marginBottom: 8 },
+  modalActions: { flexDirection: "row", gap: 12, marginTop: 12 },
+  modalGhost: { flex: 1, backgroundColor: COLORS.surfaceLight, borderRadius: 12, paddingVertical: 10, alignItems: "center" },
+  modalCancel: { color: COLORS.textMuted, textAlign: "center", paddingVertical: 8 },
+  deletePill: { flex: 1, backgroundColor: "#ef4444", borderRadius: 12, paddingVertical: 10, alignItems: "center" },
+  deletePillText: { color: "#fff", fontWeight: "700" },
+  preset: { marginRight: 10, borderRadius: 8, borderWidth: 2, borderColor: "transparent", overflow: "hidden" },
+  presetSelected: { borderColor: COLORS.teal },
+  presetImage: { width: 48, height: 48 },
+  addRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
+  addThumb: { width: 36, height: 36, borderRadius: 6, backgroundColor: COLORS.surfaceLight },
 });

@@ -16,6 +16,7 @@ from download import download_audio_from_url
 from fuzzy_search import rank_suggestions
 from recommendation_engine import RecommendationEngine
 from thumbs import pick_thumbnail
+from lyrics import lookup_lyrics
 import hls
 from security import (
     MAX_SONG_NAME_LEN,
@@ -192,7 +193,7 @@ async def _get_song_path(song_name: str, user_id: str = None, priority: bool = T
                 return None
         except Exception as e:
             print(f"Error downloading: {e}")
-            return None
+            raise RuntimeError(f"Download failed for '{song_name}': {e}") from e
             
     return target_file
 
@@ -405,6 +406,34 @@ async def get_song_info(request: Request, song_name: str):
         print(f"Error fetching info: {e}")
     return attach_session_if_needed(JSONResponse(payload), request, token)
 
+@app.get("/lyrics")
+async def get_track_lyrics(
+    request: Request,
+    title: str = "",
+    artist: str = "",
+    q: str = "",
+    duration: float = 0,
+):
+    enforce_rate_limit(request, "lyrics", 20, 60)
+    user_id, token = ensure_session(request)
+    title = title.strip()[:MAX_SONG_NAME_LEN]
+    artist = artist.strip()[:MAX_SONG_NAME_LEN]
+    q = q.strip()[:MAX_SONG_NAME_LEN]
+    if not title and not q:
+        raise HTTPException(status_code=400, detail="title or q is required")
+
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(
+        None,
+        lookup_lyrics,
+        title,
+        artist,
+        duration,
+        q,
+        ytmusic,
+    )
+    return attach_session_if_needed(JSONResponse(payload), request, token)
+
 @app.websocket("/ws/stream/{song_name}")
 async def websocket_endpoint(websocket: WebSocket, song_name: str):
     if not session_from_websocket(websocket):
@@ -433,7 +462,11 @@ async def play_song(request: Request, song_name: str):
     enforce_rate_limit(request, "play", 20, 60)
     user_id, token = ensure_session(request)
     song_name = sanitize_song_name(song_name)
-    target_file = await get_song_path(song_name, user_id)
+    try:
+        target_file = await get_song_path(song_name, user_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
     if not target_file or not os.path.exists(target_file):
         raise HTTPException(status_code=404, detail="Song not found")
 

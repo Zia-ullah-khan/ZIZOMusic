@@ -80,7 +80,7 @@ export async function ensureSession(): Promise<string> {
 }
 
 export function safeImageUrl(value: string | undefined | null): string {
-  if (!value) {
+  if (typeof value !== "string" || !value) {
     return "";
   }
 

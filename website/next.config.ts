@@ -6,13 +6,25 @@ const apiOrigin =
     ? "http://localhost:8000"
     : "https://api.zizomusic.com");
 
+const cspConnectSources = [
+  "'self'",
+  apiOrigin,
+  "https://api.zizomusic.com",
+  "https://www.zizomusic.com",
+  "https://zizomusic.com",
+  "https://static.cloudflareinsights.com",
+  "https://*.cloudflare.com",
+  "wss:",
+  "ws:",
+].join(" ");
+
 const contentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   `media-src 'self' ${apiOrigin} blob:`,
-  `connect-src 'self' ${apiOrigin}`,
+  `connect-src ${cspConnectSources}`,
   "font-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",

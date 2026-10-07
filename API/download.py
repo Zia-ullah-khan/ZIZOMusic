@@ -83,13 +83,25 @@ def _base_opts(output_dir, filename_template):
     return opts
 
 
+# Prefer clients that still return direct media URLs under YouTube SABR.
 _ATTEMPTS = [
     {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[height<=360]/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best",
+        "extractor_args": {
+            "youtube": {"player_client": ["android_sdkless", "android", "ios"]},
+        },
     },
     {
         "format": "bestaudio/best/18",
-        "extractor_args": {"youtube": {"player_client": ["web_safari", "visionos", "tv"]}},
+        "extractor_args": {
+            "youtube": {"player_client": ["mweb", "tv", "tv_simply", "web_safari"]},
+        },
+    },
+    {
+        "format": "bestaudio[ext=m4a]/bestaudio/best/18",
+        "extractor_args": {
+            "youtube": {"player_client": ["default"]},
+        },
     },
 ]
 
@@ -109,6 +121,11 @@ def download_audio_from_url(
         for attempt in _ATTEMPTS:
             opts = _base_opts(output_dir, filename_template)
             opts.update(attempt)
+            clients = (
+                (attempt.get("extractor_args") or {})
+                .get("youtube", {})
+                .get("player_client", ["default"])
+            )
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -121,7 +138,7 @@ def download_audio_from_url(
                     last_error = RuntimeError(f"Download finished without a file: {filename}")
             except Exception as e:
                 last_error = e
-                print(f"Download attempt failed ({attempt.get('format')}): {e}")
+                print(f"Download attempt failed ({clients} / {attempt.get('format')}): {e}")
     finally:
         _release(priority)
 
