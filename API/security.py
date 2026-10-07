@@ -26,8 +26,11 @@ USER_ID_PATTERN = re.compile(
 DEFAULT_CORS_ORIGINS = [
     "https://zizomusic.com",
     "https://www.zizomusic.com",
+    "https://api.zizomusic.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://localhost:3000",
+    "https://127.0.0.1:3000",
 ]
 
 DEFAULT_ALLOWED_HOSTS = [
@@ -68,7 +71,16 @@ def cors_origins():
     raw = os.environ.get("ZIZO_CORS_ORIGINS", "").strip()
     if not raw:
         return list(DEFAULT_CORS_ORIGINS)
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+    origins = []
+    for origin in raw.split(","):
+        sanitized = origin.strip().rstrip("/")
+        if sanitized and sanitized != "*":
+            origins.append(sanitized)
+
+    if origins:
+        return origins
+    return list(DEFAULT_CORS_ORIGINS)
 
 
 def allowed_hosts():
@@ -214,13 +226,14 @@ def session_from_websocket(websocket: WebSocket):
 
 
 def set_session_cookie(response: Response, token: str, request: Request):
+    secure = _cookie_secure(request)
     response.set_cookie(
         key=SESSION_COOKIE,
         value=token,
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
-        secure=_cookie_secure(request),
-        samesite="lax",
+        secure=secure,
+        samesite="none" if secure else "lax",
         path="/",
     )
 
